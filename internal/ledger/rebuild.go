@@ -12,7 +12,7 @@ type RecoveryKind string
 const (
 	// RecoveryEnqueue: a Pending lease, re-enqueued at its original position.
 	RecoveryEnqueue RecoveryKind = "Enqueue"
-	// RecoveryKeep: a Granted lease whose VM still covers its floor (or whose
+	// RecoveryKeep: a Granted lease whose VM still covers base + leases (or whose
 	// VM has no fresh data, since nothing is revoked for missing data).
 	RecoveryKeep RecoveryKind = "Keep"
 	// RecoveryVerify: a Reserved/Resizing lease whose VM covers its floor. It
@@ -42,9 +42,10 @@ type RecoveryAction struct {
 }
 
 // Rebuild creates a ledger from persisted leases and fresh agent data (§3.5).
-// Observations are applied in order. Granted leases are checked in grant order
-// and kept while the VM's assignment covers floor(vm) with them counted;
-// Reserved/Resizing leases are then checked in queue order the same way.
+// Observations are applied in order. Granted leases are checked oldest grant
+// first and kept while the VM's assignment covers base(vm) + Σ leased with them
+// counted; the rest are Lost. Reserved/Resizing leases are then checked in
+// queue order against floor(vm) with them counted.
 // Actions are returned in record order (EnqueuedAt, then ID). Rebuild is
 // deterministic: the same inputs yield the same ledger and actions.
 func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*Ledger, []RecoveryAction) {
@@ -98,7 +99,7 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 	for _, i := range granted {
 		le := l.leases[recs[i].Request.ID]
 		le.phase = PhaseGranted
-		if covered, known := l.covers(le.req.VM); !known {
+		if covered, known := l.covers(le.req.VM, true); !known {
 			actions[i].Kind, actions[i].Reason = RecoveryKeep, ReasonVMDataMissing
 		} else if covered {
 			actions[i].Kind = RecoveryKeep
@@ -116,7 +117,7 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 			ID: le.req.ID, VM: le.req.VM, Mode: l.vmCfg[le.req.VM].Mode, Bytes: le.req.Bytes,
 			AssignedBefore: v.assigned, Target: v.assigned,
 		}
-		if covered, known := l.covers(le.req.VM); known && covered {
+		if covered, known := l.covers(le.req.VM, false); known && covered {
 			l.resSeq++
 			le.res.Seq = l.resSeq
 			res := le.res
@@ -130,13 +131,19 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 	return l, actions
 }
 
-// covers reports whether vm's assignment covers its floor with the leases
-// currently loaded. known is false when the VM is not managed or has no fresh
-// host data, so nothing can be decided.
-func (l *Ledger) covers(vm VMName) (covered, known bool) {
+// covers reports whether vm's assignment covers the leases currently loaded.
+// For granted leases the bound is static, base + Σ leased: margin and effBase
+// steer admission and the reconciler, and a VM under normal load (free below
+// margin) keeps its leases. For in-flight leases it is floor(vm), as for a
+// new grant. known is false when the VM is not managed or has no fresh host
+// data, so nothing can be decided.
+func (l *Ledger) covers(vm VMName, granted bool) (covered, known bool) {
 	q := l.compute().vms[vm]
 	if q == nil || !q.managed || !q.assignedFresh {
 		return false, false
+	}
+	if granted {
+		return q.assigned >= q.cfg.Base+q.leased, true
 	}
 	return q.assigned >= q.floor, true
 }

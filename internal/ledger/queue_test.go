@@ -51,9 +51,10 @@ func TestQueueOrder(t *testing.T) {
 	}
 }
 
-// TestQueueRule covers §3.4: requests are evaluated in queue order; H is the
-// first that does not fit; later requests fit only with delta == 0 and no
-// candidate VM in common with H.
+// TestQueueRule covers §3.4: requests are evaluated in queue order; a waiting
+// request that could use the pool (H) lets later requests fit only with
+// delta == 0 and no candidate VM in common with it; a waiting request whose
+// candidates are all fixed only keeps later requests off those VMs.
 func TestQueueRule(t *testing.T) {
 	type want struct {
 		vm     VMName
@@ -101,6 +102,36 @@ func TestQueueRule(t *testing.T) {
 			ahead: []Request{pod("h", 20*Gi, "vm-a")},
 			req:   pod("r", 1*Gi, "vm-b", "linux-node-1"),
 			want:  []want{{"vm-b", true, 0, ""}, {"linux-node-1", true, 0, ""}},
+		},
+		{
+			name:  "behind fixed-only head: pool-drawing request on another VM is granted",
+			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
+			req:   ext("r", "vm-a", 5*Gi),
+			want:  []want{{"vm-a", true, 3 * Gi, ""}},
+		},
+		{
+			name:  "behind fixed-only head: request on its VM waits",
+			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
+			req:   pod("r", 1*Gi, "linux-node-1"),
+			want:  []want{{"linux-node-1", false, 0, ReasonQueued}},
+		},
+		{
+			name:  "behind fixed-only head: a pod may use its other candidates",
+			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
+			req:   pod("r", 3*Gi, "vm-b", "linux-node-1"),
+			want:  []want{{"vm-b", true, 1 * Gi, ""}, {"linux-node-1", false, 0, ReasonQueued}},
+		},
+		{
+			name:  "fixed-only head then a waiting pool user: pool draws wait again",
+			ahead: []Request{pod("h", 20*Gi, "linux-node-1"), ext("h2", "vm-a", 20*Gi)},
+			req:   ext("r", "vm-b", 3*Gi),
+			want:  []want{{"vm-b", false, 1 * Gi, ReasonQueued}},
+		},
+		{
+			name:  "waiting requests behind the head lock their candidates too",
+			ahead: []Request{ext("h", "vm-a", 20*Gi), ext("q", "vm-b", 3*Gi)},
+			req:   ext("r", "vm-b", 1*Gi),
+			want:  []want{{"vm-b", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "earlier fitting request uses up the pool",

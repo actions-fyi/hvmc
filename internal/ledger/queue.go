@@ -63,25 +63,47 @@ func (l *Ledger) queue() []*lease {
 // sim evaluates the queue in order (§3.4). Requests ahead that fit are assumed
 // granted: they use up headroom of the VM they would be placed on and the pool
 // they would draw, so a later request can never take what an earlier one
-// needs. H (head) is the first request that does not fit; after it, a request
-// fits only with delta == 0 and no candidate VM in common with H.
+// needs. Every request that does not fit blocks what it could use itself:
+//   - one with a resizable candidate (static or dynamic) could use the pool,
+//     so later requests may not draw from the pool and may not share any
+//     candidate VM with it (the head-of-line rule for H);
+//   - one whose candidates are all fixed can only use their headroom, so later
+//     requests may still draw from the pool but not be placed on those VMs.
 type sim struct {
-	l         *Ledger
-	c         *calc
-	queue     []*lease
-	budget    int64
-	consumed  map[VMName]int64
-	head      *lease
-	headCands map[VMName]bool
+	l          *Ledger
+	c          *calc
+	queue      []*lease
+	budget     int64
+	consumed   map[VMName]int64
+	poolLocked bool
+	// candLocked: candidates of waiting requests that could use the pool; a
+	// later request sharing any of them waits.
+	candLocked map[VMName]bool
+	// vmLocked: candidates of waiting fixed-only requests; nothing later is
+	// placed on them.
+	vmLocked map[VMName]bool
 }
 
 func (l *Ledger) newSim(c *calc) *sim {
-	return &sim{l: l, c: c, queue: l.queue(), budget: c.pool, consumed: map[VMName]int64{}}
+	return &sim{
+		l: l, c: c, queue: l.queue(), budget: c.pool, consumed: map[VMName]int64{},
+		candLocked: map[VMName]bool{}, vmLocked: map[VMName]bool{},
+	}
 }
 
-func (s *sim) overlapsHead(cands []VMName) bool {
+func (s *sim) sharesLocked(cands []VMName) bool {
 	for _, vm := range cands {
-		if s.headCands[vm] {
+		if s.candLocked[vm] {
+			return true
+		}
+	}
+	return false
+}
+
+// resizable reports whether any of cands can grow (and so use the pool).
+func (s *sim) resizable(cands []VMName) bool {
+	for _, vm := range cands {
+		if q := s.c.vms[vm]; q != nil && q.managed && q.cfg.Mode != ModeFixed {
 			return true
 		}
 	}
@@ -112,17 +134,16 @@ func (s *sim) fit(le *lease, vm VMName, cands []VMName) Fit {
 		// A probe exercises the production grow path, so it always grows.
 		f.Delta = max(f.Delta, step)
 	}
-	afterHead := s.head != nil
 	switch {
 	case !q.assignedFresh:
 		f.Reason = ReasonVMDataMissing
-	case afterHead && s.overlapsHead(cands):
+	case s.vmLocked[vm] || s.sharesLocked(cands):
 		f.Reason = ReasonQueued
 	case f.Delta == 0:
 		f.Fits = true
 	case q.cfg.Mode == ModeFixed:
 		f.Reason = ReasonNoHeadroom
-	case afterHead:
+	case s.poolLocked:
 		f.Reason = ReasonQueued
 	case q.state != VMReady:
 		f.Reason = ReasonVMUnknown
@@ -177,12 +198,13 @@ func (s *sim) advance(le *lease) bool {
 		s.take(le, f)
 		return true
 	}
-	if s.head == nil {
-		s.head = le
-		s.headCands = make(map[VMName]bool, len(cands))
-		for _, vm := range cands {
-			s.headCands[vm] = true
-		}
+	locked := s.vmLocked
+	if s.resizable(cands) {
+		s.poolLocked = true
+		locked = s.candLocked
+	}
+	for _, vm := range cands {
+		locked[vm] = true
 	}
 	return false
 }

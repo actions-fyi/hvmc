@@ -38,7 +38,8 @@ func rec(id RequestID, vm VMName, bytes int64, p Phase, enq time.Duration) Lease
 
 // TestRebuild has one row per phase (§3.5, WP 1.3 acceptance) plus the
 // orderings and degenerate records Rebuild has to handle. vm-a: assigned 8Gi,
-// floor without leases 6Gi.
+// base 4Gi, floor without leases 6Gi. Granted leases are Lost only when
+// assigned < base + Σ leased; Reserved/Resizing ones need floor.
 func TestRebuild(t *testing.T) {
 	type act struct {
 		kind   RecoveryKind
@@ -48,6 +49,7 @@ func TestRebuild(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name      string
+		obs       []Observation // nil: standardObs
 		records   []LeaseRecord
 		actions   []act
 		phases    map[RequestID]Phase
@@ -99,8 +101,8 @@ func TestRebuild(t *testing.T) {
 			phases:  map[RequestID]Phase{"g": PhaseGranted},
 		},
 		{
-			name:    "Granted not covered: Failed(Lost)",
-			records: []LeaseRecord{rec("g", "vm-a", 3*Gi, PhaseGranted, 0)},
+			name:    "Granted not covered (assigned < base + leased): Failed(Lost)",
+			records: []LeaseRecord{rec("g", "vm-a", 5*Gi, PhaseGranted, 0)},
 			actions: []act{{RecoveryLost, "g", PhaseFailed, ReasonLost}},
 			phases:  map[RequestID]Phase{"g": ""},
 		},
@@ -117,11 +119,11 @@ func TestRebuild(t *testing.T) {
 			phases:  map[RequestID]Phase{"x": ""},
 		},
 		{
-			name: "Granted leases are kept in grant order while covered",
+			name: "Granted leases are kept oldest grant first while covered",
 			records: []LeaseRecord{
-				{Request: Request{ID: "late", Kind: KindExternal, VM: "vm-a", Bytes: Gi, EnqueuedAt: t0}, Phase: PhaseGranted, GrantedAt: t0.Add(time.Hour)},
-				{Request: Request{ID: "early", Kind: KindExternal, VM: "vm-a", Bytes: Gi, EnqueuedAt: t0.Add(time.Minute)}, Phase: PhaseGranted, GrantedAt: t0.Add(2 * time.Minute)},
-				{Request: Request{ID: "third", Kind: KindExternal, VM: "vm-a", Bytes: Gi, EnqueuedAt: t0.Add(time.Minute)}, Phase: PhaseGranted, GrantedAt: t0.Add(2 * time.Hour)},
+				{Request: Request{ID: "late", Kind: KindExternal, VM: "vm-a", Bytes: 2 * Gi, EnqueuedAt: t0}, Phase: PhaseGranted, GrantedAt: t0.Add(time.Hour)},
+				{Request: Request{ID: "early", Kind: KindExternal, VM: "vm-a", Bytes: 2 * Gi, EnqueuedAt: t0.Add(time.Minute)}, Phase: PhaseGranted, GrantedAt: t0.Add(2 * time.Minute)},
+				{Request: Request{ID: "third", Kind: KindExternal, VM: "vm-a", Bytes: 2 * Gi, EnqueuedAt: t0.Add(time.Minute)}, Phase: PhaseGranted, GrantedAt: t0.Add(2 * time.Hour)},
 			},
 			actions: []act{
 				{RecoveryKeep, "late", PhaseGranted, ""},
@@ -129,6 +131,20 @@ func TestRebuild(t *testing.T) {
 				{RecoveryLost, "third", PhaseFailed, ReasonLost},
 			},
 			phases: map[RequestID]Phase{"late": PhaseGranted, "early": PhaseGranted, "third": ""},
+		},
+		{
+			// vm-a: assigned 8Gi, used 7.5Gi (free 0.5Gi < margin 2Gi), so
+			// floor = 9.5Gi > assigned; base 4Gi + leased 4Gi = 8Gi still fits.
+			name: "busy VM with free < margin keeps its Granted leases",
+			obs: append(standardObs(t0), Observation{Guest: &GuestObservation{
+				VM: "vm-a", Total: 8 * Gi, Available: Gi / 2, ObservedAt: t0,
+			}}),
+			records: []LeaseRecord{
+				rec("g1", "vm-a", 3*Gi, PhaseGranted, 0),
+				rec("g2", "vm-a", 1*Gi, PhaseGranted, time.Minute),
+			},
+			actions: []act{{RecoveryKeep, "g1", PhaseGranted, ""}, {RecoveryKeep, "g2", PhaseGranted, ""}},
+			phases:  map[RequestID]Phase{"g1": PhaseGranted, "g2": PhaseGranted},
 		},
 		{
 			name: "Reserved checked after Granted",
@@ -169,7 +185,11 @@ func TestRebuild(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clk := NewFakeClock(t0.Add(5 * time.Second))
-			l, actions := Rebuild(testConfig(), tc.records, standardObs(t0), clk)
+			obs := tc.obs
+			if obs == nil {
+				obs = standardObs(t0)
+			}
+			l, actions := Rebuild(testConfig(), tc.records, obs, clk)
 			var got []act
 			for _, a := range actions {
 				got = append(got, act{a.Kind, a.ID, a.To, a.Reason})
@@ -206,15 +226,15 @@ func TestRebuild(t *testing.T) {
 			}
 			// Idempotence: the same inputs and the rebuilt ledger's own records
 			// produce the same ledger.
-			l1, a1 := Rebuild(testConfig(), tc.records, standardObs(t0), clk)
-			l2, a2 := Rebuild(testConfig(), tc.records, standardObs(t0), clk)
+			l1, a1 := Rebuild(testConfig(), tc.records, obs, clk)
+			l2, a2 := Rebuild(testConfig(), tc.records, obs, clk)
 			if d := cmp.Diff(a1, a2); d != "" {
 				t.Errorf("actions not deterministic:\n%s", d)
 			}
 			if d := cmp.Diff(l1.Snapshot(), l2.Snapshot()); d != "" {
 				t.Errorf("ledger not deterministic:\n%s", d)
 			}
-			l3, _ := Rebuild(testConfig(), l1.Records(), standardObs(t0), clk)
+			l3, _ := Rebuild(testConfig(), l1.Records(), obs, clk)
 			if d := cmp.Diff(l1.Snapshot(), l3.Snapshot()); d != "" {
 				t.Errorf("rebuild from own records differs:\n%s", d)
 			}

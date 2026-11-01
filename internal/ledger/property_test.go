@@ -149,14 +149,54 @@ func (m *machine) setCandidates(t *rapid.T) {
 	}
 }
 
-// headOf returns the first Pending request that is not grantable now.
-func headOf(s Snapshot) (LeaseView, bool) {
-	for _, lv := range s.Leases {
-		if lv.Phase == PhasePending && !lv.Grantable && len(lv.Request.candidates()) > 0 {
-			return lv, true
+// queueLocks is an outside model of what waiting requests block (§3.4 as
+// decided for hvmc): a waiting request that could use the pool (a static or
+// dynamic candidate) blocks pool draws and every request sharing a candidate
+// with it; a waiting request with only fixed candidates blocks placements on
+// those VMs. locksBefore builds it from the Pending requests ahead of index i.
+type queueLocks struct {
+	pool  bool
+	cands map[VMName]RequestID
+	vms   map[VMName]RequestID
+}
+
+func locksBefore(s Snapshot, i int) queueLocks {
+	resizable := map[VMName]bool{}
+	for _, v := range s.VMs {
+		resizable[v.Name] = v.Managed && v.Mode != ModeFixed
+	}
+	lk := queueLocks{cands: map[VMName]RequestID{}, vms: map[VMName]RequestID{}}
+	for _, lv := range s.Leases[:i] {
+		cands := lv.Request.candidates()
+		if lv.Phase != PhasePending || lv.Grantable || len(cands) == 0 {
+			continue
+		}
+		into := lk.vms
+		if slices.ContainsFunc(cands, func(vm VMName) bool { return resizable[vm] }) {
+			lk.pool, into = true, lk.cands
+		}
+		for _, vm := range cands {
+			into[vm] = lv.Request.ID
 		}
 	}
-	return LeaseView{}, false
+	return lk
+}
+
+// violation explains why granting lv with fit f would overtake a waiting
+// request ahead of it, or returns "".
+func (lk queueLocks) violation(lv LeaseView, f Fit) string {
+	if lk.pool && f.Delta != 0 {
+		return fmt.Sprintf("draws %d from the pool behind a waiting pool user", f.Delta)
+	}
+	if id, ok := lk.vms[f.VM]; ok {
+		return fmt.Sprintf("is placed on %s, a candidate of waiting fixed-only %s", f.VM, id)
+	}
+	for _, c := range lv.Request.candidates() {
+		if id, ok := lk.cands[c]; ok {
+			return fmt.Sprintf("shares candidate %s with waiting %s", c, id)
+		}
+	}
+	return ""
 }
 
 func (m *machine) reserve(t *rapid.T) {
@@ -199,21 +239,11 @@ func (m *machine) reserve(t *rapid.T) {
 		t.Fatalf("Reserve succeeded but Evaluate said %+v", fits[0])
 	}
 	// The head of the queue is never overtaken by a pool-drawing or
-	// same-candidate request.
-	if h, ok := headOf(before); ok {
-		ahead := slices.IndexFunc(before.Leases, func(lv LeaseView) bool { return lv.Request.ID == h.Request.ID })
-		mine := slices.IndexFunc(before.Leases, func(lv LeaseView) bool { return lv.Request.ID == id })
-		if ahead < mine {
-			cands := before.Leases[mine].Request.candidates()
-			if res.Delta != 0 {
-				t.Fatalf("%s overtook head %s drawing %d from the pool", id, h.Request.ID, res.Delta)
-			}
-			for _, c := range cands {
-				if slices.Contains(h.Request.candidates(), c) {
-					t.Fatalf("%s overtook head %s on shared candidate %s", id, h.Request.ID, c)
-				}
-			}
-		}
+	// same-candidate request (or, behind a fixed-only head, by a request on
+	// its VMs).
+	mine := slices.IndexFunc(before.Leases, func(lv LeaseView) bool { return lv.Request.ID == id })
+	if why := locksBefore(before, mine).violation(before.Leases[mine], fit); why != "" {
+		t.Fatalf("%s reserved on %s although it %s", id, vm, why)
 	}
 	m.phases[id] = PhaseReserved
 	m.res[id] = res
@@ -474,26 +504,15 @@ func (m *machine) check(t *rapid.T) {
 		}
 		prev = lv
 	}
-	// After the head, only delta-0 requests on other VMs are grantable.
-	if h, ok := headOf(s); ok {
-		after := false
-		for _, lv := range s.Leases {
-			if lv.Request.ID == h.Request.ID {
-				after = true
-				continue
-			}
-			if !after || lv.Phase != PhasePending || !lv.Grantable {
-				continue
-			}
-			for _, f := range m.l.Evaluate(lv.Request.ID, nil) {
-				if f.Fits && f.Delta != 0 {
-					t.Fatalf("%s behind head %s grantable with delta %d", lv.Request.ID, h.Request.ID, f.Delta)
-				}
-			}
-			for _, c := range lv.Request.candidates() {
-				if slices.Contains(h.Request.candidates(), c) {
-					t.Fatalf("%s behind head %s grantable on shared candidate %s", lv.Request.ID, h.Request.ID, c)
-				}
+	// Nothing grantable behind a waiting request takes what that one needs.
+	for i, lv := range s.Leases {
+		if lv.Phase != PhasePending || !lv.Grantable {
+			continue
+		}
+		lk := locksBefore(s, i)
+		for _, f := range m.l.Evaluate(lv.Request.ID, nil) {
+			if why := lk.violation(lv, f); f.Fits && why != "" {
+				t.Fatalf("%s grantable on %s although it %s", lv.Request.ID, f.VM, why)
 			}
 		}
 	}
