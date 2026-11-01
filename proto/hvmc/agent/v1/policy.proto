@@ -1,0 +1,67 @@
+// Host-side write policy (DESIGN §4.3).
+//
+// The host agent enforces a local policy file that only the operator can
+// change. The coordinator can read the active policy's digest (GetHost) and
+// propose a replacement (HostAgent.ProposePolicy); a proposal is stored as
+// pending and becomes active only after `hvmc agent policy sync` on the host.
+syntax = "proto3";
+
+package hvmc.agent.v1;
+
+option go_package = "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1;agentv1";
+
+// Policy is the set of write permissions of one host agent. Reads (ListVMs,
+// WatchVMs) always cover every VM on the host; the policy restricts writes
+// only. A VM that is not listed is read-only.
+//
+// The canonical form and digest of a Policy are defined by the Go package
+// internal/policy, which both the agent and the coordinator use. VM order in
+// this message carries no meaning.
+message Policy {
+  // Per-VM rules. VM names are unique within a policy.
+  repeated VMPolicy vms = 1;
+}
+
+// VMPolicy holds the write permissions for one VM.
+//
+// Independent of min and max, the agent always enforces the Dynamic Memory
+// direction rules: the DM maximum may only be raised and the DM minimum may
+// only be lowered (FAILED_PRECONDITION otherwise).
+message VMPolicy {
+  // Hyper-V VM name.
+  string name = 1;
+  // True for a `fixed` VM: listed, but read-only to the agent; every write is
+  // refused with FAILED_PRECONDITION. min_bytes and max_bytes are then 0.
+  bool fixed = 2;
+  // Lowest value, in bytes, a write may set: startup memory for static VMs,
+  // the DM minimum for Dynamic Memory VMs. Required (> 0) unless fixed.
+  // Writes below it are refused with PERMISSION_DENIED.
+  int64 min_bytes = 3;
+  // Highest value, in bytes, a write may set: startup memory for static VMs,
+  // the DM maximum for Dynamic Memory VMs. Required (>= min_bytes) unless
+  // fixed. Writes above it are refused with PERMISSION_DENIED.
+  int64 max_bytes = 4;
+}
+
+// ProposePolicyRequest carries the policy the coordinator derived from
+// HostConfig.
+message ProposePolicyRequest {
+  // The proposed policy.
+  Policy policy = 1;
+  // Digest of `policy` as computed by the coordinator (internal/policy). The
+  // agent recomputes it and refuses the proposal with INVALID_ARGUMENT on a
+  // mismatch, so canonicalization differences between coordinator and agent
+  // versions surface instead of causing endless re-proposals.
+  string digest = 2;
+}
+
+// ProposePolicyResponse reports the agent's policy state after the proposal.
+message ProposePolicyResponse {
+  // Digest of the active policy (unchanged by ProposePolicy).
+  string active_digest = 1;
+  // Digest of the pending policy after the call. Equal to the request's
+  // digest when the proposal was stored; empty when the proposal equals the
+  // active policy (nothing is stored then, and an earlier pending proposal is
+  // discarded).
+  string pending_digest = 2;
+}
