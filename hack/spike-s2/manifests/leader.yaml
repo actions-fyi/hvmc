@@ -12,6 +12,12 @@ spec:
   containers:
     - name: c
       image: ${PAUSE_IMAGE}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
       ports:
         - {name: http, containerPort: 8080}
 ---
@@ -26,6 +32,12 @@ spec:
   containers:
     - name: c
       image: ${PAUSE_IMAGE}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
       ports:
         - {name: http, containerPort: 8080}
 ---

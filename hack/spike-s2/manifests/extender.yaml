@@ -44,9 +44,16 @@ spec:
       labels: {app: stub-extender}
     spec:
       serviceAccountName: stub-extender
+      automountServiceAccountToken: true  # needs the API (binding / scheduling)
       containers:
         - name: extender
           image: spike.local/stub-extender:dev
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
           imagePullPolicy: Never
           args: ["-listen=:8888", "-watch-namespace=spike-test"]
           ports:

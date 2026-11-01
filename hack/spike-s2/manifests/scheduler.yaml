@@ -92,9 +92,16 @@ spec:
       labels: {app: hvmc-scheduler}
     spec:
       serviceAccountName: hvmc-scheduler
+      automountServiceAccountToken: true  # needs the API (binding / scheduling)
       containers:
         - name: kube-scheduler
           image: ${SCHEDULER_IMAGE}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
           imagePullPolicy: IfNotPresent
           command:
             - kube-scheduler

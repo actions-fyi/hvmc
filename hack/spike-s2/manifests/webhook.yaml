@@ -17,6 +17,12 @@ spec:
       containers:
         - name: webhook
           image: spike.local/stub-webhook:dev
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
           imagePullPolicy: Never
           args: ["-listen=:9444", "-scheduler-name=hvmc-scheduler", "-memory-request=64Mi"]
           ports:
