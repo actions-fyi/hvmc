@@ -413,8 +413,8 @@ For pods, `bytes` = the pod's effective request for `hvmc.fax.fyi/ram`, computed
 
 Pod authors only add the extended resource to `limits`. A MutatingWebhookConfiguration (shipped by the chart, served by the coordinator on `:9444`) matches pod CREATE with a CEL `matchCondition` — `object.spec.containers` or `initContainers` has a `limits` entry for `hvmc.fax.fyi/ram` — so no other pod ever reaches the webhook. `failurePolicy: Fail`, so an hvmc pod can never be scheduled past the ledger. It:
 - sets `schedulerName: hvmc-scheduler` (rejects a pod that explicitly names another non-default scheduler);
-- sets `requests.memory` of each container to `podDefaults.memoryRequest` [64Mi]. By admission time Kubernetes has already defaulted `requests.memory` to `limits.memory`, which would make the in-tree `NodeResourcesFit` filter reject nodes that are about to be grown; for hvmc pods the lease is the memory reservation, so the request is normalized always;
-- adds `limits.memory` = the container's `hvmc.fax.fyi/ram` limit when `limits.memory` is unset, so the container is capped at its lease;
+- sets `requests.memory` of each container (regular or init) that carries a `hvmc.fax.fyi/ram` limit to `podDefaults.memoryRequest` [64Mi]; other containers are left alone. By admission time Kubernetes has already defaulted `requests.memory` to `limits.memory`, which would make the in-tree `NodeResourcesFit` filter reject nodes that are about to be grown; for hvmc pods the lease is the memory reservation, so the request is normalized always;
+- adds `limits.memory` = the container's `hvmc.fax.fyi/ram` limit when `limits.memory` is unset, so the container is capped at its lease. A pod submitted with only the RAM limit is BestEffort; after the webhook it is Burstable;
 - annotates `hvmc.fax.fyi/managed: "true"`.
 
 Pod contract (README):
@@ -426,7 +426,7 @@ resources:
 
 ### 7.2 hvmc-scheduler (shipped by the chart)
 
-An upstream kube-scheduler Deployment with one profile, rendered by the chart into a ConfigMap; it runs in-cluster with its own ServiceAccount (bound to `system:kube-scheduler`, `system:volume-scheduler`, and `extension-apiserver-authentication-reader` in `kube-system`), so it uses in-cluster config and resolves cluster DNS:
+An upstream kube-scheduler Deployment with one profile, rendered by the chart into a ConfigMap; it runs in-cluster with its own ServiceAccount (bound to `system:kube-scheduler`, `system:volume-scheduler`, and `extension-apiserver-authentication-reader` in `kube-system`, plus a Role in the release namespace granting `coordination.k8s.io` `leases` `create`, and `get`/`update` on `resourceNames: [hvmc-scheduler]` — `system:kube-scheduler` only covers the lease named `kube-scheduler`, so without this Role the scheduler never becomes leader), so it uses in-cluster config and resolves cluster DNS:
 ```yaml
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
@@ -456,10 +456,11 @@ Known property of running a second scheduler: its cache does not see the default
 ### 7.3 Extender behaviour
 
 Served by the coordinator on `:8443` (TLS from the internal CA). Only `hvmc-scheduler` calls it, and only for pods that request the resource; hvmc's own pods never do, so there is no bootstrap dependency.
-- **Filter**: on the first call for a pod UID, create its MemoryLease in `Pending` (queue position = now; owner reference to the pod). For each candidate node mapped to a managed VM, evaluate `fits` under the queue rule (§3.4) without reserving. Nodes with no VM mapping fail for these pods. `FailedNodes[node] = "hvmc: queued #<pos>, need <n>Gi (headroom <h>, pool <p>)"` or `"hvmc: host agent <state>"`.
+- **Filter**: on the first call for a pod UID, create its MemoryLease in `Pending` (queue position = now; owner reference to the pod). For each candidate node mapped to a managed VM, evaluate `fits` under the queue rule (§3.4) without reserving. Nodes with no VM mapping fail for these pods. The `FailedNodes[node]` reason is a **fixed string per cause** — `hvmc: node not managed`, `hvmc: waiting for memory on this VM`, `hvmc: waiting for host pool`, `hvmc: queued behind earlier requests`, `hvmc: host agent unavailable`, `hvmc: guest agent unavailable`. Every change of the text rewrites the pod's `PodScheduled` condition, which requeues the pod immediately and defeats backoff (measured in spike S2: ~55 filter calls/s with a counter in the text). Queue position, needed bytes, headroom and pool go to the MemoryLease status and to rate-limited Events instead.
+- **Filter cost**: any cluster event requeues every waiting hvmc pod (kubernetes/kubernetes#122019), so filter is a read-only ledger evaluation: no agent calls, no API writes after the first call for a pod (MemoryLease creation is idempotent), and a call-rate metric `hvmc_extender_filter_calls_total`.
 - **Prioritize**: 0–10, prefer `delta == 0` (no resize), then larger headroom.
 - **Bind**: Pending → Reserved (VM = chosen node's VM) → resize if `delta > 0` → verify → Granted → `POST pods/<name>/binding` → return. Any failure: lease back to `Pending` (keeps queue position) for retryable errors, `Failed` otherwise; return an error so the scheduler retries. Bind runs in the scheduler's asynchronous binding cycle, so a slow resize does not block other scheduling.
-- **Requeue nudge**: when capacity frees up and a waiting pod lease becomes grantable, the coordinator patches the pod's annotation `hvmc.fax.fyi/queue-generation`, so the scheduler re-evaluates it instead of waiting out backoff or the unschedulable-pods flush. The e2e test asserts the requeue latency.
+- **Requeue nudge**: when capacity frees up and a waiting pod lease becomes grantable, the coordinator patches the pod's annotation `hvmc.fax.fyi/queue-generation`, so the scheduler re-evaluates it at once instead of leaving it in the unschedulable queue until an unrelated cluster event or the 5-minute flush (spike S2: next filter call ≤ 150 ms after the patch). The e2e test asserts < 1 s from patch to next filter call.
 - **Release**: the MemoryLease controller marks a pod lease `Released` when the pod object is deleted or reaches `Succeeded|Failed` — not when `deletionTimestamp` is set, because containers keep running through the grace period. Owner references make GC the backstop.
 
 ## 8. HTTP facade (clients outside Kubernetes)
@@ -506,7 +507,7 @@ Templates:
 - CRDs as regular templates (not `crds/`), so `helm upgrade` updates them and `helm uninstall` removes them with all CRs; value `crds.keep` [false] adds `helm.sh/resource-policy: keep` for operators who want them retained. HostConfig rendered from `values.hostConfig` (or `hostConfig.existing: true`).
 - Cleanup: every object the coordinator creates at runtime (agent Services/EndpointSlices, `hvmc-ca`, bootstrap Secrets, `hvmc-ca-bundle`, MemoryLeases without a pod owner) carries an owner reference to HostConfig `default`, so uninstall leaves nothing behind. Reinstalling therefore creates a new CA and agents re-enroll (documented).
 - Coordinator: Deployment, ServiceAccount, ClusterRole/Binding (pods get/list/watch/patch; pods/binding create; nodes get/list/watch; services, endpointslices, secrets, configmaps in the release namespace; mutatingwebhookconfigurations get/patch (own object, caBundle); events create; coordination leases; hvmc.fax.fyi/*), PodDisruptionBudget.
-- `hvmc-scheduler`: Deployment, ConfigMap (§7.2), ServiceAccount + bindings, PodDisruptionBudget.
+- `hvmc-scheduler`: Deployment, ConfigMap (§7.2), ServiceAccount + bindings, leader-lease Role + RoleBinding (§7.2), PodDisruptionBudget.
 - MutatingWebhookConfiguration (§7.1), webhook Service (all replicas).
 - Services: `hvmc-extender` (leader), `hvmc-facade` (leader; ClusterIP or LoadBalancer), `hvmc-webhook` (all), `hvmc-metrics`. Selectorless agent Services/EndpointSlices are created by the coordinator from HostConfig (§4.7).
 - Ingress for facade + enrollment (`/v1/leases`, `/v1/vms`, `/v1/enroll`), TLS from a values-named Secret or cert-manager annotations.
