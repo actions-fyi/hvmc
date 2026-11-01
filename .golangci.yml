@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - errname
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - nolintlint
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/matfax/hvmc

@@ -33,7 +33,7 @@ hvmc (Hyper-V Memory Coordinator) is a Go service running in Kubernetes that own
 - Coordinator image: `docker.io/matfax/hvmc:<semver>` and `:latest` (published from the first release on), `linux/amd64` only, built with `ko` (distroless static base, non-root, `-trimpath`, version from tag). It is the only image hvmc builds.
 - Agent binaries (plain `go build`, `CGO_ENABLED=0`): `hvmc_<ver>_linux_amd64.tar.gz` and `hvmc_<ver>_windows_amd64.zip`, attached to the GitHub Release with SHA-256 checksums and cosign blob signatures. The same `hvmc` binary is coordinator and agent; agents just run `hvmc agent`.
 - Chart: `charts/hvmc/` in the repo, installed from a checkout (`helm install hvmc ./charts/hvmc`); chart version = app version. Publishing to `oci://ghcr.io/matfax/charts/hvmc` is **DEFERRED**.
-- Toolchain: `k8s.io/*` modules at the newest Kubernetes minor at project start (v0.36.x), the controller-runtime release built against them, and the Go version those modules require (the `go` directive follows them). kubebuilder v4 layout. Code generation: controller-gen (CRDs, deepcopy, RBAC) and buf only; generated code is committed. Dependencies are fixed in §2.1.
+- Toolchain: `k8s.io/*` modules at the newest Kubernetes minor at project start (v0.37.x; controller-runtime v0.25), the controller-runtime release built against them, and the Go version those modules require (the `go` directive follows them). kubebuilder v4 layout. Code generation: controller-gen (CRDs, deepcopy, RBAC) and buf only; generated code is committed. Dependencies are fixed in §2.1.
 
 ```
 cmd/hvmc/                 main, cobra subcommands
