@@ -16,10 +16,10 @@
 //     number into the FailedNodes text, so it changes on every call (like a
 //     reason that carries a queue position or current headroom).
 //
-// With -watch-namespace it also watches pods and logs every change of the
-// hvmc.fax.fyi/queue-generation annotation, so the latency from "pod update
-// visible to watchers" to "next filter call" is measured on one monotonic
-// clock (mono_ms, milliseconds since process start).
+// With -watch-namespace it also watches pods there and logs every pod add
+// and every change of the hvmc.fax.fyi/queue-generation annotation, so the
+// latency from "pod event visible to watchers" to "next filter call" is
+// measured on one monotonic clock (mono_ms, milliseconds since start).
 package main
 
 import (
@@ -111,13 +111,18 @@ func logCall(msg string, args ...any) {
 	slog.Info(msg, append([]any{"unix_ms", time.Now().UnixMilli(), "mono_ms", time.Since(start).Milliseconds()}, args...)...)
 }
 
-// watchQueueGeneration logs every change of the queue-generation annotation
-// as the extender's informer sees it, which approximates when the
+// watchQueueGeneration logs pod adds and every change of the
+// queue-generation annotation as the extender's informer sees them, which approximates when the
 // scheduler's own pod informer sees the same update.
 func watchQueueGeneration(client kubernetes.Interface, namespace string) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(client, 0, informers.WithNamespace(namespace))
 	inf := factory.Core().V1().Pods().Informer()
 	_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if p, ok := obj.(*corev1.Pod); ok {
+				logCall("pod-add", "pod", podKey(p))
+			}
+		},
 		UpdateFunc: func(oldObj, newObj any) {
 			o, ok1 := oldObj.(*corev1.Pod)
 			n, ok2 := newObj.(*corev1.Pod)

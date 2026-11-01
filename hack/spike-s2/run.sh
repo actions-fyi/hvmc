@@ -75,7 +75,7 @@ pod_json() {
 # Error text of a rejected create, without the kubectl prefix.
 api_error() { sed -e 's/^Error from server ([A-Za-z]*): //' -e 's/^error when creating "STDIN": //' | tr '\n' ' ' | cut -c1-300; }
 
-ext_log() { kubectl -n "$NS" logs deploy/stub-extender --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="filter" or .msg=="prioritize" or .msg=="bind" or .msg=="pod-update")'; }
+ext_log() { kubectl -n "$NS" logs deploy/stub-extender --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="filter" or .msg=="prioritize" or .msg=="bind" or .msg=="pod-update" or .msg=="pod-add")'; }
 wh_log() { kubectl -n "$NS" logs deploy/stub-webhook --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="admission")'; }
 wh_count() { wh_log | wc -l | tr -d ' '; }
 # intervals: successive differences of a number column, comma separated.
@@ -279,7 +279,7 @@ check4() {
     wait_until 90 pod_ready "$p" || { ok=0; notes+=("$p not Ready within 90 s"); }
   done
   ext_log | jq -c 'del(.time, .level)'
-  pods=$(ext_log | jq -r 'select(.msg != "pod-update") | .pod' | sort -u | tr '\n' ' ')
+  pods=$(ext_log | jq -r 'select(.msg == "filter" or .msg == "prioritize" or .msg == "bind") | .pod' | sort -u | tr '\n' ' ')
   [[ $pods == "$TNS/c3-ram $TNS/c3-ram-mem " ]] || { ok=0; notes+=("extender saw pods: $pods"); }
   local per=()
   for p in c3-ram c3-ram-mem; do
@@ -362,6 +362,39 @@ check5_park() {
   if [[ -n $upd ]] && ((nxt - upd < 1000)); then record PASS "$pid" "$text"; else record FAIL "$pid" "$text"; fi
 }
 
+# check5_churn: while a pod rejected with a constant reason is parked,
+# unrelated pods are created one at a time. Each pod-add the extender sees is
+# matched with the parked pod's next filter call.
+check5_churn() {
+  section "check 5f: unrelated pod creations while an hvmc pod is parked"
+  local name=r-churn i n0 add nxt lat=() hit=0 total0 total1
+  create_ram_pod "$name" '{"spike.hvmc.fax.fyi/reject-until-generation":"1"}'
+  two_calls() { (($(filter_mono "$name" | grep -c .) >= 2)); }
+  wait_until 30 two_calls || { record ERROR 5f "parked pod got fewer than 2 filter calls"; return; }
+  sleep 5
+  total0=$(filter_mono "$name" | grep -c .)
+  for i in 1 2 3 4 5; do
+    n0=$(filter_mono "$name" | grep -c .)
+    pod_json "u-churn-$i" '{}' | kubectl create -f - >/dev/null
+    more_calls() { (($(filter_mono "$name" | grep -c .) > n0)); }
+    wait_until 5 more_calls
+    sleep 3
+  done
+  total1=$(filter_mono "$name" | grep -c .)
+  for i in 1 2 3 4 5; do
+    add=$(ext_log | jq -r --arg p "$TNS/u-churn-$i" 'select(.msg=="pod-add" and .pod==$p) | .mono_ms' | head -1)
+    nxt=$(filter_mono "$name" | awk -v t="${add:-0}" '$1 >= t' | head -1)
+    if [[ -n $add && -n $nxt ]] && ((nxt - add < 3000)); then
+      hit=$((hit + 1))
+      lat+=($((nxt - add)))
+    else
+      lat+=("none")
+    fi
+  done
+  kubectl -n "$TNS" delete pod "$name" --wait=false >/dev/null
+  record PASS 5f "$hit/5 unrelated pod creations were followed by a filter call of the parked pod within 3 s; pod-add seen -> next filter call ms: ${lat[*]}; filter calls of the parked pod during the 5 creations (24 s): $((total1 - total0))"
+}
+
 check5_volatile() {
   section "check 5e: rejection reason that changes on every call, no intervention for 20 s"
   local ts n
@@ -435,11 +468,11 @@ finish() {
     echo "--- webhook calls"
     wh_log | jq -c 'del(.time, .level, .containersIn)'
     echo "--- hvmc-scheduler queue moves of the check 5 pods (count, message, event, queue)"
-    scheduler_logs | grep 'scheduling_queue' | grep -E 'pod="spike-test/r-' |
+    scheduler_logs | grep 'scheduling_queue' | grep -E '"spike-test/r-' |
       sed -E 's/^[IWE][0-9]+ [0-9:.]+ +[0-9]+ [a-z_]+\.go:[0-9]+\] //; s/ schedulingCycle=[0-9]+//; s/ (hint|unschedulable plugins|attempts|backoff)=.*//' |
       sort | uniq -c | sort -rn | head -40
     echo "--- hvmc-scheduler log (filtered)"
-    scheduler_logs | grep -iE 'r-once|r-always|r-patch|c3-ram|c4-noram|forbidden|acquired|xtender|backoff|unable to schedule' | cut -c1-400 | tail -400
+    scheduler_logs | grep -iE 'spike-test/(r-park|r-churn|r-once|c3-ram|c4-noram)|forbidden|acquired|xtender|flush' | cut -c1-400 | tail -300
     echo "--- hvmc-scheduler log tail"
     scheduler_logs | tail -40 | cut -c1-400
     echo "--- events in $TNS"
@@ -475,6 +508,7 @@ check4
 check5a
 check5_park 5b 5c r-park-60 60
 check5_park 5d-pre 5d r-park-15 15
+check5_churn
 check5_volatile
 check6
 finish
