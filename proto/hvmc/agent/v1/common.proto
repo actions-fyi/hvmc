@@ -1,0 +1,96 @@
+// Shared definitions and conventions of the hvmc agent API.
+//
+// The coordinator (gRPC client, leader only) talks to agents (gRPC servers)
+// over mutual TLS. Every agent serves CertificateService and grpc.health.v1;
+// the host agent additionally serves HostAgent, each guest agent GuestAgent.
+//
+// Conventions that apply to every message in this package:
+//
+//   - Memory quantities are bytes, carried as int64 and never negative. Field
+//     names end in `_bytes`. There are no percentages for memory amounts; the
+//     only percentage is Hyper-V's own Dynamic Memory buffer setting.
+//   - Every observation carries `observed_at` (google.protobuf.Timestamp, UTC),
+//     the time the agent read the value from its source (Hyper-V,
+//     /proc/meminfo, GlobalMemoryStatusEx), not the time the response was
+//     sent. The coordinator treats values older than its `staleAfter` setting
+//     as missing, so agents never refresh `observed_at` without re-reading.
+//   - VMs are addressed by their Hyper-V name, the same name the host policy
+//     (policy.proto) uses.
+//
+// Health (grpc.health.v1.Health, Check and Watch) is served on the same mTLS
+// port. Service names: "" (overall), "hvmc.agent.v1.HostAgent" on the host
+// agent, "hvmc.agent.v1.GuestAgent" on guest agents. NOT_SERVING means the
+// agent's readiness checks fail; its data must then be treated as missing.
+//
+// Error model. Failures are reported as gRPC status codes; the status message
+// is for humans and must not be parsed. The codes have these meanings:
+//
+//   - INVALID_ARGUMENT: the request is malformed (missing VM name, negative or
+//     misaligned byte count, empty certificate chain, digest mismatch). Not
+//     retryable without changing the request.
+//   - NOT_FOUND: the named VM does not exist on the host.
+//   - FAILED_PRECONDITION: the request is well-formed but the VM's state does
+//     not allow it: a write to a `fixed` VM (read-only to the agent), a
+//     Dynamic Memory direction violation (lowering the DM maximum or raising
+//     the DM minimum), SetStartup on a DM VM or SetDynamicLimits on a static
+//     VM, or InstallCertificate without a matching pending key. Not retryable.
+//   - PERMISSION_DENIED: the agent's local policy denies the write: the VM is
+//     not listed in the active policy, or the requested value lies outside the
+//     policy's [min, max]. Not retryable until the operator activates a new
+//     policy on the host.
+//   - UNAUTHENTICATED: the client certificate's CN is not in the agent's
+//     `allowedClients`. (Certificates not chained to the hvmc CA already fail
+//     the TLS handshake.)
+//   - RESOURCE_EXHAUSTED: the Hyper-V host does not have enough free memory
+//     for the requested grow. Retryable once memory frees up.
+//   - ABORTED: the guest refused (part of) a shrink. The VM may be partially
+//     shrunk and its startup value may have changed anyway; the caller
+//     re-reads the VM, retries at the midpoint (at most 3 attempts) and
+//     repairs the startup value if needed.
+//   - UNAVAILABLE: the agent cannot reach its data source right now: the
+//     Hyper-V Virtual Machine Management service (vmms) is down or the
+//     PowerShell worker is restarting. Retryable with backoff. Also used by
+//     gRPC itself when the agent is unreachable.
+//   - DEADLINE_EXCEEDED: the operation did not finish in time, either the
+//     caller's deadline or the agent's per-cmdlet timeout (default 30 s). The
+//     outcome of a write is unknown; the caller re-reads before retrying.
+//   - UNIMPLEMENTED: the RPC is not served by this agent role.
+//   - INTERNAL: an unexpected agent-side failure (bug, unparsable cmdlet
+//     output). Retryable with backoff.
+//
+// When a write RPC fails after the agent touched the VM (ABORTED,
+// DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED), the agent attaches a ResizeResult
+// to the status details if it could re-read the VM afterwards. Callers may
+// use it for logging but must still re-read the VM themselves.
+syntax = "proto3";
+
+package hvmc.agent.v1;
+
+option go_package = "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1;agentv1";
+
+// AgentRole is the role an agent was installed with (`--role`).
+enum AgentRole {
+  AGENT_ROLE_UNSPECIFIED = 0;
+  // The agent on the Hyper-V host; serves HostAgent.
+  AGENT_ROLE_HOST = 1;
+  // An agent inside a managed VM; serves GuestAgent.
+  AGENT_ROLE_GUEST = 2;
+}
+
+// OperatingSystem is the operating system an agent runs on.
+enum OperatingSystem {
+  OPERATING_SYSTEM_UNSPECIFIED = 0;
+  OPERATING_SYSTEM_LINUX = 1;
+  OPERATING_SYSTEM_WINDOWS = 2;
+}
+
+// AgentInfo identifies the agent software answering a call.
+message AgentInfo {
+  // Version of the hvmc binary running the agent (semver or a git describe
+  // string for development builds).
+  string version = 1;
+  // Role the agent was installed with.
+  AgentRole role = 2;
+  // Operating system the agent runs on.
+  OperatingSystem operating_system = 3;
+}
