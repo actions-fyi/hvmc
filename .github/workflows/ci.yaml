@@ -30,6 +30,8 @@ jobs:
           git diff --exit-code
       - name: Test
         run: make test
+      - name: Ledger coverage (>= 95 %)
+        run: make test-ledger-coverage
       - name: Build
         run: make build build-agent-linux build-agent-windows
       - name: Build image (no push)
