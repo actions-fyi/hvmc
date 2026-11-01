@@ -206,17 +206,7 @@ func (m *machine) reserve(t *rapid.T) {
 	}
 	vm := rapid.SampledFrom(managedVMs).Draw(t, "vm")
 	before := m.l.Snapshot()
-	lv, _ := m.leaseOf(id)
-	evalOn := []VMName{vm}
-	if lv.Request.Kind == KindPod && lv.Request.VM == "" && len(lv.Request.Candidates) > 0 {
-		evalOn = lv.Request.Candidates // the filter's view
-	}
-	var fit Fit
-	for _, f := range m.l.Evaluate(id, evalOn) {
-		if f.VM == vm {
-			fit = f
-		}
-	}
+	fit := m.fitOn(id, vm)
 	res, err := m.l.Reserve(id, vm)
 	if fit.VM == "" { // vm is not a candidate of the pod
 		if reasonOf(err) != ReasonNotCandidate {
@@ -247,6 +237,24 @@ func (m *machine) reserve(t *rapid.T) {
 	}
 	m.phases[id] = PhaseReserved
 	m.res[id] = res
+}
+
+// fitOn returns Evaluate's fit of id on vm, evaluated the way the filter sees
+// it (an unpinned pod with candidates on all of them); its VM is "" when vm is
+// not a candidate of the pod.
+func (m *machine) fitOn(id RequestID, vm VMName) Fit {
+	lv, _ := m.leaseOf(id)
+	evalOn := []VMName{vm}
+	if lv.Request.Kind == KindPod && lv.Request.VM == "" && len(lv.Request.Candidates) > 0 {
+		evalOn = lv.Request.Candidates // the filter's view
+	}
+	var fit Fit
+	for _, f := range m.l.Evaluate(id, evalOn) {
+		if f.VM == vm {
+			fit = f
+		}
+	}
+	return fit
 }
 
 // reserveRollback: Rollback restores the pre-Reserve state exactly (a pod
@@ -340,7 +348,7 @@ func (m *machine) release(t *rapid.T) {
 		return
 	}
 	m.l.Release(id)
-	if p := m.phases[id]; p != PhaseFailed {
+	if m.phases[id] != PhaseFailed {
 		m.phases[id] = PhaseReleased
 	}
 	delete(m.res, id)
@@ -469,13 +477,29 @@ func (m *machine) dispatch(t *rapid.T) {
 
 func (m *machine) check(t *rapid.T) {
 	s := m.l.Snapshot()
+	checkTotals(t, s)
+	m.checkPhases(t)
+	m.checkQueueOrder(t, s)
+	m.checkHeadNotOvertaken(t, s)
+	checkShrinksAboveFloor(t, s)
+	// Frozen: nothing is dispatchable.
+	if s.Frozen && m.l.Dispatchable() != nil {
+		t.Fatalf("frozen ledger dispatches")
+	}
+}
+
+// checkTotals: the pool is never negative and Σ committed ≤ capacity − reserve.
+func checkTotals(t *rapid.T, s Snapshot) {
 	if s.Pool < 0 {
 		t.Fatalf("pool negative: %d (%+v)", s.Pool, s)
 	}
 	if s.Committed > s.Capacity-s.Reserve {
 		t.Fatalf("Σ committed %d > capacity − reserve %d", s.Committed, s.Capacity-s.Reserve)
 	}
-	// Phases follow the model (legal transitions only).
+}
+
+// checkPhases: phases follow the model (legal transitions only).
+func (m *machine) checkPhases(t *rapid.T) {
 	for _, id := range m.ids {
 		want := m.phases[id]
 		lv, ok := m.l.Lease(id)
@@ -488,23 +512,32 @@ func (m *machine) check(t *rapid.T) {
 			t.Fatalf("%s: phase %s, model %s", id, lv.Phase, want)
 		}
 	}
-	// FIFO within a class: priority never rises along the queue and arrival
-	// time never decreases within one priority.
-	var prev *LeaseView
-	for i := range s.Leases {
-		lv := &s.Leases[i]
-		if lv.Phase != PhasePending {
-			break
-		}
-		if prev != nil {
-			pp, cp := m.l.priority(prev.Request), m.l.priority(lv.Request)
-			if cp > pp || (cp == pp && lv.Request.EnqueuedAt.Before(prev.Request.EnqueuedAt)) {
-				t.Fatalf("queue order broken at %s after %s", lv.Request.ID, prev.Request.ID)
-			}
-		}
-		prev = lv
+}
+
+// checkQueueOrder: FIFO within a class. Priority never rises along the queue
+// and arrival time never decreases within one priority.
+func (m *machine) checkQueueOrder(t *rapid.T, s Snapshot) {
+	queue := s.Leases
+	if n := slices.IndexFunc(queue, func(lv LeaseView) bool { return lv.Phase != PhasePending }); n >= 0 {
+		queue = queue[:n]
 	}
-	// Nothing grantable behind a waiting request takes what that one needs.
+	for i := 1; i < len(queue); i++ {
+		prev, lv := &queue[i-1], &queue[i]
+		if m.queuedBefore(lv.Request, prev.Request) {
+			t.Fatalf("queue order broken at %s after %s", lv.Request.ID, prev.Request.ID)
+		}
+	}
+}
+
+// queuedBefore reports whether a belongs strictly before b in the queue.
+func (m *machine) queuedBefore(a, b Request) bool {
+	pa, pb := m.l.priority(a), m.l.priority(b)
+	return pa > pb || (pa == pb && a.EnqueuedAt.Before(b.EnqueuedAt))
+}
+
+// checkHeadNotOvertaken: nothing grantable behind a waiting request takes what
+// that one needs.
+func (m *machine) checkHeadNotOvertaken(t *rapid.T, s Snapshot) {
 	for i, lv := range s.Leases {
 		if lv.Phase != PhasePending || !lv.Grantable {
 			continue
@@ -516,17 +549,17 @@ func (m *machine) check(t *rapid.T) {
 			}
 		}
 	}
-	// Shrink reservations never go below floor while in flight.
+}
+
+// checkShrinksAboveFloor: shrink reservations never go below floor while in
+// flight.
+func checkShrinksAboveFloor(t *rapid.T, s Snapshot) {
 	for _, sh := range s.Shrinks {
 		for _, v := range s.VMs {
 			if v.Name == sh.VM && v.Floor > sh.Target {
 				t.Fatalf("floor %d of %s above shrink target %d", v.Floor, sh.VM, sh.Target)
 			}
 		}
-	}
-	// Frozen: nothing is dispatchable.
-	if s.Frozen && m.l.Dispatchable() != nil {
-		t.Fatalf("frozen ledger dispatches")
 	}
 }
 
@@ -572,65 +605,17 @@ func TestPropertyRollbackAfterResize(t *testing.T) {
 		w := drawWorld(t)
 		clkA, clkB := NewFakeClock(t0), NewFakeClock(t0)
 		a, b := w.build(clkA), w.build(clkB)
-		n := rapid.IntRange(1, 6).Draw(t, "n")
-		var reqs []Request
-		for i := range n {
-			r := drawRequest(t, RequestID(fmt.Sprintf("r-%d", i)))
-			r.Deadline = time.Time{}
-			reqs = append(reqs, r)
-		}
-		// Find a request that fits somewhere, on a scratch ledger.
-		scratch := w.build(NewFakeClock(t0))
-		type pair struct {
-			i  int
-			vm VMName
-		}
-		var fitting []pair
-		for _, r := range reqs {
-			if _, err := scratch.Enqueue(r); err != nil {
-				t.Fatalf("Enqueue: %v", err)
-			}
-		}
-		for i, r := range reqs {
-			on := managedVMs
-			if r.Kind == KindPod && len(r.Candidates) > 0 {
-				on = nil // its own candidates
-			}
-			for _, f := range scratch.Evaluate(r.ID, on) {
-				if f.Fits {
-					fitting = append(fitting, pair{i, f.VM})
-				}
-			}
-		}
+		reqs := drawUndatedRequests(t)
+		fitting := fittingPlacements(t, w, reqs)
 		if len(fitting) == 0 {
 			t.Skip("nothing fits")
 		}
 		p := rapid.SampledFrom(fitting).Draw(t, "pair")
-		pick, vm := p.i, p.vm
-		id := reqs[pick].ID
-		for i, r := range reqs {
-			if _, err := a.Enqueue(r); err != nil {
-				t.Fatalf("Enqueue: %v", err)
-			}
-			if i == pick && r.Kind == KindPod {
-				// The untouched ledger gets the pod already pinned, the one
-				// intended effect of a rolled-back bind.
-				r.VM = vm
-			}
-			if _, err := b.Enqueue(r); err != nil {
-				t.Fatalf("Enqueue: %v", err)
-			}
-		}
-		res, err := a.Reserve(id, vm)
-		if err != nil {
-			t.Fatalf("Reserve(%s, %s): %v", id, vm, err)
-		}
-		if res.Delta > 0 {
-			if err := a.MarkResizing(res); err != nil {
-				t.Fatal(err)
-			}
-		}
-		a.Rollback(res, ReasonVerifyTimeout, true)
+		enqueueAll(t, a, reqs, -1, "")
+		// The untouched ledger gets the pod already pinned, the one intended
+		// effect of a rolled-back bind.
+		enqueueAll(t, b, reqs, p.i, p.vm)
+		rollBackIssuedResize(t, a, reqs[p.i].ID, p.vm)
 		for _, l := range []*Ledger{a, b} {
 			l.clk.(*FakeClock).Advance(time.Second)
 			for _, o := range w.observations(l.clk.Now()) {
@@ -644,22 +629,78 @@ func TestPropertyRollbackAfterResize(t *testing.T) {
 	})
 }
 
+// rollBackIssuedResize reserves id on vm, marks the resize as issued when it
+// grows the VM, and rolls the reservation back with requeue.
+func rollBackIssuedResize(t *rapid.T, l *Ledger, id RequestID, vm VMName) {
+	res, err := l.Reserve(id, vm)
+	if err != nil {
+		t.Fatalf("Reserve(%s, %s): %v", id, vm, err)
+	}
+	if res.Delta > 0 {
+		if err := l.MarkResizing(res); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Rollback(res, ReasonVerifyTimeout, true)
+}
+
+// drawUndatedRequests draws 1 to 6 requests without deadlines.
+func drawUndatedRequests(t *rapid.T) []Request {
+	n := rapid.IntRange(1, 6).Draw(t, "n")
+	var reqs []Request
+	for i := range n {
+		r := drawRequest(t, RequestID(fmt.Sprintf("r-%d", i)))
+		r.Deadline = time.Time{}
+		reqs = append(reqs, r)
+	}
+	return reqs
+}
+
+// placement is a request (by index) and a VM it fits on.
+type placement struct {
+	i  int
+	vm VMName
+}
+
+// fittingPlacements enqueues reqs on a scratch ledger of w and returns every
+// request and VM it fits on.
+func fittingPlacements(t *rapid.T, w *world, reqs []Request) []placement {
+	scratch := w.build(NewFakeClock(t0))
+	enqueueAll(t, scratch, reqs, -1, "")
+	var fitting []placement
+	for i, r := range reqs {
+		on := managedVMs
+		if r.Kind == KindPod && len(r.Candidates) > 0 {
+			on = nil // its own candidates
+		}
+		for _, f := range scratch.Evaluate(r.ID, on) {
+			if f.Fits {
+				fitting = append(fitting, placement{i, f.VM})
+			}
+		}
+	}
+	return fitting
+}
+
+// enqueueAll enqueues reqs on l in order. A pod at index pin is enqueued
+// pinned to vm.
+func enqueueAll(t *rapid.T, l *Ledger, reqs []Request, pin int, vm VMName) {
+	for i, r := range reqs {
+		if i == pin && r.Kind == KindPod {
+			r.VM = vm
+		}
+		if _, err := l.Enqueue(r); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	}
+}
+
 // TestPropertyRebuildIdempotent: Rebuild is deterministic, and rebuilding from
 // a rebuilt ledger's own records changes nothing.
 func TestPropertyRebuildIdempotent(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		w := drawWorld(t)
-		n := rapid.IntRange(0, 10).Draw(t, "n")
-		var recs []LeaseRecord
-		for i := range n {
-			r := drawRequest(t, RequestID(fmt.Sprintf("r-%d", rapid.IntRange(0, 12).Draw(t, "idn"))))
-			r.EnqueuedAt = t0.Add(time.Duration(rapid.IntRange(-100, 0).Draw(t, "enqS")) * time.Second)
-			p := rapid.SampledFrom([]Phase{PhasePending, PhaseReserved, PhaseResizing, PhaseGranted, PhaseReleased, PhaseFailed}).Draw(t, "phase")
-			if p != PhasePending && r.VM == "" && len(r.Candidates) > 0 {
-				r.VM = r.Candidates[0]
-			}
-			recs = append(recs, LeaseRecord{Request: r, Phase: p, GrantedAt: t0.Add(time.Duration(i) * time.Second)})
-		}
+		recs := drawRecords(t)
 		clk := NewFakeClock(t0)
 		obs := w.observations(t0)
 		l1, a1 := Rebuild(w.cfg, recs, obs, clk)
@@ -681,4 +722,21 @@ func TestPropertyRebuildIdempotent(t *testing.T) {
 			}
 		}
 	})
+}
+
+// drawRecords draws up to 10 lease records in any phase, possibly with
+// duplicate IDs. Records holding memory are pinned to a VM where possible.
+func drawRecords(t *rapid.T) []LeaseRecord {
+	n := rapid.IntRange(0, 10).Draw(t, "n")
+	var recs []LeaseRecord
+	for i := range n {
+		r := drawRequest(t, RequestID(fmt.Sprintf("r-%d", rapid.IntRange(0, 12).Draw(t, "idn"))))
+		r.EnqueuedAt = t0.Add(time.Duration(rapid.IntRange(-100, 0).Draw(t, "enqS")) * time.Second)
+		p := rapid.SampledFrom([]Phase{PhasePending, PhaseReserved, PhaseResizing, PhaseGranted, PhaseReleased, PhaseFailed}).Draw(t, "phase")
+		if p != PhasePending && r.VM == "" && len(r.Candidates) > 0 {
+			r.VM = r.Candidates[0]
+		}
+		recs = append(recs, LeaseRecord{Request: r, Phase: p, GrantedAt: t0.Add(time.Duration(i) * time.Second)})
+	}
+	return recs
 }

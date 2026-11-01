@@ -58,21 +58,7 @@ func TestTransitions(t *testing.T) {
 				t.Errorf("double Reserve: %v", err)
 			}
 			for i, s := range tc.steps {
-				var err error
-				switch s.op {
-				case "resizing":
-					err = f.l.MarkResizing(res)
-				case "commit":
-					err = f.l.Commit(res, ResizeOutcome{})
-				case "fail":
-					err = f.l.Fail("r", "x")
-				case "release":
-					f.l.Release("r")
-				case "requeue":
-					f.l.Rollback(res, ReasonResizeFailed, true)
-				case "fail-rollback":
-					f.l.Rollback(res, ReasonResizeFailed, false)
-				}
+				err := f.applyTransition(s.op, "r", res)
 				if !errors.Is(err, s.wantErr) {
 					t.Errorf("step %d %s: err %v, want %v", i, s.op, err, s.wantErr)
 				}
@@ -82,6 +68,26 @@ func TestTransitions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// applyTransition runs one TestTransitions step on request id with
+// reservation res.
+func (f *fixture) applyTransition(op string, id RequestID, res Reservation) error {
+	switch op {
+	case "resizing":
+		return f.l.MarkResizing(res)
+	case "commit":
+		return f.l.Commit(res, ResizeOutcome{})
+	case "fail":
+		return f.l.Fail(id, "x")
+	case "release":
+		f.l.Release(id)
+	case "requeue":
+		f.l.Rollback(res, ReasonResizeFailed, true)
+	case "fail-rollback":
+		f.l.Rollback(res, ReasonResizeFailed, false)
+	}
+	return nil
 }
 
 func TestStaleReservations(t *testing.T) {
@@ -148,11 +154,7 @@ func TestHoldAfterIssuedResize(t *testing.T) {
 	}{
 		{"rollback", func(f *fixture, res Reservation) { f.l.Rollback(res, ReasonVerifyTimeout, false) }},
 		{"release", func(f *fixture, _ Reservation) { f.l.Release("r") }},
-		{"commit without outcome", func(f *fixture, res Reservation) {
-			if err := f.l.Commit(res, ResizeOutcome{}); err != nil {
-				f.t.Fatal(err)
-			}
-		}},
+		{"commit without outcome", commitWithoutOutcome},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := standard(t)
@@ -162,31 +164,53 @@ func TestHoldAfterIssuedResize(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.end(f, res)
-			v := f.vmView("vm-a")
-			if v.Committed < 11*Gi || f.l.Snapshot().InFlight != 3*Gi {
-				t.Fatalf("hold lost: committed %d inflight %d", v.Committed, f.l.Snapshot().InFlight)
-			}
-			f.enqueue(ext("other", "vm-a", 3*Gi))
-			if got := f.l.Evaluate("other", nil); got[0].Reason != ReasonVMBusy {
-				t.Errorf("held VM not busy: %+v", got)
-			}
-			if _, err := f.l.ReserveShrink("vm-a", 6*Gi); !errors.Is(err, ErrVMBusy) {
-				t.Errorf("shrink on held VM: %v", err)
-			}
-			f.vm("vm-a", 11*Gi, 2*Gi) // same instant: not after the hold
-			if f.l.Snapshot().InFlight != 3*Gi {
-				t.Errorf("same-instant observation released the hold")
-			}
-			f.clk.Advance(time.Second)
-			f.vm("vm-a", 11*Gi, 2*Gi)
-			if s := f.l.Snapshot(); s.InFlight != 3*Gi { // growth now a debt against hostFree
-				t.Errorf("growth not counted against hostFree: inflight %d", s.InFlight)
-			}
-			f.host(9 * Gi)
-			if s := f.l.Snapshot(); s.InFlight != 0 || f.vmView("vm-a").Assigned != 11*Gi {
-				t.Errorf("after observations: %+v", s)
-			}
+			checkHeld(t, f)
+			checkHoldReleasedByObservation(t, f)
 		})
+	}
+}
+
+func commitWithoutOutcome(f *fixture, res Reservation) {
+	f.t.Helper()
+	if err := f.l.Commit(res, ResizeOutcome{}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// checkHeld checks that vm-a's 11Gi target is still counted and keeps the VM
+// busy for grants and shrinks.
+func checkHeld(t *testing.T, f *fixture) {
+	t.Helper()
+	v := f.vmView("vm-a")
+	if v.Committed < 11*Gi || f.l.Snapshot().InFlight != 3*Gi {
+		t.Fatalf("hold lost: committed %d inflight %d", v.Committed, f.l.Snapshot().InFlight)
+	}
+	f.enqueue(ext("other", "vm-a", 3*Gi))
+	if got := f.l.Evaluate("other", nil); got[0].Reason != ReasonVMBusy {
+		t.Errorf("held VM not busy: %+v", got)
+	}
+	if _, err := f.l.ReserveShrink("vm-a", 6*Gi); !errors.Is(err, ErrVMBusy) {
+		t.Errorf("shrink on held VM: %v", err)
+	}
+}
+
+// checkHoldReleasedByObservation checks that only a later observation of
+// vm-a ends the hold, and that the growth then counts against hostFree until
+// the host reports again.
+func checkHoldReleasedByObservation(t *testing.T, f *fixture) {
+	t.Helper()
+	f.vm("vm-a", 11*Gi, 2*Gi) // same instant: not after the hold
+	if f.l.Snapshot().InFlight != 3*Gi {
+		t.Errorf("same-instant observation released the hold")
+	}
+	f.clk.Advance(time.Second)
+	f.vm("vm-a", 11*Gi, 2*Gi)
+	if s := f.l.Snapshot(); s.InFlight != 3*Gi { // growth now a debt against hostFree
+		t.Errorf("growth not counted against hostFree: inflight %d", s.InFlight)
+	}
+	f.host(9 * Gi)
+	if s := f.l.Snapshot(); s.InFlight != 0 || f.vmView("vm-a").Assigned != 11*Gi {
+		t.Errorf("after observations: %+v", s)
 	}
 }
 
@@ -225,8 +249,7 @@ func TestSubscribe(t *testing.T) {
 	}
 	cancel()
 	cancel() // idempotent
-	for range ch {
-	}
+	drain(ch)
 	f.enqueue(ext("after", "vm-a", Gi)) // no subscriber, must not block
 }
 
@@ -238,7 +261,13 @@ func TestSubscribeCancelWhileBuffered(t *testing.T) {
 	}
 	<-ch
 	cancel()
-	for range ch {
+	drain(ch)
+}
+
+// drain discards events until ch is closed.
+func drain(ch <-chan Event) {
+	for open := true; open; {
+		_, open = <-ch
 	}
 }
 

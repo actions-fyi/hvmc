@@ -42,16 +42,23 @@ func TestReserveShrinkTarget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if res.Target != tc.want || res.From != 8*Gi || res.VM != tc.vm {
-				t.Errorf("reservation %+v, want target %d", res, tc.want)
-			}
-			if v := f.vmView(tc.vm); res.Target < v.Floor {
-				t.Errorf("target %d below floor %d", res.Target, v.Floor)
-			}
-			if s := f.l.Snapshot(); len(s.Shrinks) != 1 || s.Shrinks[0] != res {
-				t.Errorf("snapshot shrinks %+v", s.Shrinks)
-			}
+			checkShrinkReservation(t, f, res, tc.vm, tc.want)
 		})
+	}
+}
+
+// checkShrinkReservation checks a fresh shrink reservation of vm from 8Gi to
+// want: at or above floor and the only shrink in the snapshot.
+func checkShrinkReservation(t *testing.T, f *fixture, res ShrinkReservation, vm VMName, want int64) {
+	t.Helper()
+	if res.Target != want || res.From != 8*Gi || res.VM != vm {
+		t.Errorf("reservation %+v, want target %d", res, want)
+	}
+	if v := f.vmView(vm); res.Target < v.Floor {
+		t.Errorf("target %d below floor %d", res.Target, v.Floor)
+	}
+	if s := f.l.Snapshot(); len(s.Shrinks) != 1 || s.Shrinks[0] != res {
+		t.Errorf("snapshot shrinks %+v", s.Shrinks)
 	}
 }
 

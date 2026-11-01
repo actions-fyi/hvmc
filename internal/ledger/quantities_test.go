@@ -182,7 +182,7 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 		name  string
 		mod   func(f *fixture)
 		vm    VMName
-		check func(t *testing.T, s Snapshot, v VMView)
+		check snapshotCheck
 	}{
 		{
 			name: "configured capacity overrides host total",
@@ -190,12 +190,8 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 				f.cfg.Capacity = 50 * Gi
 				f.l.Configure(f.cfg)
 			},
-			vm: "vm-a",
-			check: func(t *testing.T, s Snapshot, _ VMView) {
-				if s.Capacity != 50*Gi || s.Pool != 50*Gi-4*Gi-44*Gi {
-					t.Errorf("capacity %d pool %d", s.Capacity, s.Pool)
-				}
-			},
+			vm:    "vm-a",
+			check: checkConfiguredCapacity,
 		},
 		{
 			name: "DM assigned accounting",
@@ -203,12 +199,8 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 				f.cfg.DMAccounting = DMAccountingAssigned
 				f.l.Configure(f.cfg)
 			},
-			vm: "vm-dm",
-			check: func(t *testing.T, s Snapshot, v VMView) {
-				if v.Committed != 4*Gi || s.Committed != 36*Gi {
-					t.Errorf("committed %d total %d", v.Committed, s.Committed)
-				}
-			},
+			vm:    "vm-dm",
+			check: checkDMAssignedAccounting,
 		},
 		{
 			name: "per-VM margin",
@@ -216,22 +208,14 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 				f.cfg.VMs[0].Margin = ptr(1 * Gi)
 				f.l.Configure(f.cfg)
 			},
-			vm: "vm-a",
-			check: func(t *testing.T, _ Snapshot, v VMView) {
-				if v.Margin != 1*Gi || v.Floor != 5*Gi || v.Headroom != 3*Gi {
-					t.Errorf("margin %d floor %d headroom %d", v.Margin, v.Floor, v.Headroom)
-				}
-			},
+			vm:    "vm-a",
+			check: checkPerVMMargin,
 		},
 		{
-			name: "non-lease usage above base raises floor; static committed follows floor",
-			mod:  func(f *fixture) { f.guest("vm-a", 8*Gi, 7*Gi) },
-			vm:   "vm-a",
-			check: func(t *testing.T, _ Snapshot, v VMView) {
-				if v.EffBase != 7*Gi || v.Floor != 9*Gi || v.Headroom != -1*Gi || v.Committed != 9*Gi {
-					t.Errorf("effBase %d floor %d headroom %d committed %d", v.EffBase, v.Floor, v.Headroom, v.Committed)
-				}
-			},
+			name:  "non-lease usage above base raises floor; static committed follows floor",
+			mod:   func(f *fixture) { f.guest("vm-a", 8*Gi, 7*Gi) },
+			vm:    "vm-a",
+			check: checkUsageRaisesFloor,
 		},
 		{
 			name: "stale guest data counts as missing and makes the VM Unknown",
@@ -241,32 +225,20 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 				f.host(12 * Gi)
 				f.vm("vm-a", 8*Gi, -1)
 			},
-			vm: "vm-a",
-			check: func(t *testing.T, _ Snapshot, v VMView) {
-				if v.State != VMUnknown || v.UsedKnown || v.EffBase != 4*Gi || v.Floor != 6*Gi {
-					t.Errorf("state %s usedKnown %v effBase %d floor %d", v.State, v.UsedKnown, v.EffBase, v.Floor)
-				}
-			},
+			vm:    "vm-a",
+			check: checkStaleGuestData,
 		},
 		{
-			name: "stale host data freezes the ledger and marks VMs Missing",
-			mod:  func(f *fixture) { f.clk.Advance(31 * time.Second) },
-			vm:   "vm-a",
-			check: func(t *testing.T, s Snapshot, v VMView) {
-				if !s.Frozen || v.State != VMMissing || v.Committed != 8*Gi {
-					t.Errorf("frozen %v state %s committed %d", s.Frozen, v.State, v.Committed)
-				}
-			},
+			name:  "stale host data freezes the ledger and marks VMs Missing",
+			mod:   func(f *fixture) { f.clk.Advance(31 * time.Second) },
+			vm:    "vm-a",
+			check: checkStaleHostData,
 		},
 		{
-			name: "guest agent not Ready makes the VM Unknown",
-			mod:  func(f *fixture) { f.l.SetAgentState("vm-a", AgentDegraded) },
-			vm:   "vm-a",
-			check: func(t *testing.T, _ Snapshot, v VMView) {
-				if v.State != VMUnknown {
-					t.Errorf("state %s", v.State)
-				}
-			},
+			name:  "guest agent not Ready makes the VM Unknown",
+			mod:   func(f *fixture) { f.l.SetAgentState("vm-a", AgentDegraded) },
+			vm:    "vm-a",
+			check: checkGuestAgentNotReady,
 		},
 		{
 			name: "managed VM never observed",
@@ -274,12 +246,8 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 				f.cfg.VMs = append(f.cfg.VMs, VMConfig{Name: "vm-new", GuestOS: GuestWindows, Mode: ModeStatic, Base: 2 * Gi})
 				f.l.Configure(f.cfg)
 			},
-			vm: "vm-new",
-			check: func(t *testing.T, _ Snapshot, v VMView) {
-				if v.State != VMMissing || v.Assigned != 0 || v.Committed != 4*Gi || v.Headroom != -4*Gi {
-					t.Errorf("state %s assigned %d committed %d headroom %d", v.State, v.Assigned, v.Committed, v.Headroom)
-				}
-			},
+			vm:    "vm-new",
+			check: checkNeverObserved,
 		},
 		{
 			name: "complete VM list drops VMs that are gone",
@@ -291,12 +259,8 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 					{Name: "linux-node-1", Assigned: 16 * Gi, ObservedAt: f.now()},
 				}})
 			},
-			vm: "vm-dm",
-			check: func(t *testing.T, s Snapshot, v VMView) {
-				if v.State != VMMissing || v.Assigned != 0 || len(s.VMs) != 4 {
-					t.Errorf("state %s assigned %d VMs %d", v.State, v.Assigned, len(s.VMs))
-				}
-			},
+			vm:    "vm-dm",
+			check: checkCompleteVMList,
 		},
 		{
 			name: "older observations never replace newer ones",
@@ -307,12 +271,8 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 					Guest: &GuestObservation{VM: "vm-a", Total: 8 * Gi, Available: 0, ObservedAt: f.now().Add(-time.Second)},
 				})
 			},
-			vm: "vm-a",
-			check: func(t *testing.T, s Snapshot, v VMView) {
-				if s.HostFree != 12*Gi || v.Assigned != 8*Gi || v.Used != 2*Gi {
-					t.Errorf("hostFree %d assigned %d used %d", s.HostFree, v.Assigned, v.Used)
-				}
-			},
+			vm:    "vm-a",
+			check: checkOlderObservations,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -320,6 +280,79 @@ func TestSnapshotQuantityVariants(t *testing.T) {
 			tc.mod(f)
 			tc.check(t, f.l.Snapshot(), f.vmView(tc.vm))
 		})
+	}
+}
+
+// snapshotCheck checks a snapshot and the view of one VM in it.
+type snapshotCheck func(t *testing.T, s Snapshot, v VMView)
+
+func checkConfiguredCapacity(t *testing.T, s Snapshot, _ VMView) {
+	t.Helper()
+	if s.Capacity != 50*Gi || s.Pool != 50*Gi-4*Gi-44*Gi {
+		t.Errorf("capacity %d pool %d", s.Capacity, s.Pool)
+	}
+}
+
+func checkDMAssignedAccounting(t *testing.T, s Snapshot, v VMView) {
+	t.Helper()
+	if v.Committed != 4*Gi || s.Committed != 36*Gi {
+		t.Errorf("committed %d total %d", v.Committed, s.Committed)
+	}
+}
+
+func checkPerVMMargin(t *testing.T, _ Snapshot, v VMView) {
+	t.Helper()
+	if v.Margin != 1*Gi || v.Floor != 5*Gi || v.Headroom != 3*Gi {
+		t.Errorf("margin %d floor %d headroom %d", v.Margin, v.Floor, v.Headroom)
+	}
+}
+
+func checkUsageRaisesFloor(t *testing.T, _ Snapshot, v VMView) {
+	t.Helper()
+	if v.EffBase != 7*Gi || v.Floor != 9*Gi || v.Headroom != -1*Gi || v.Committed != 9*Gi {
+		t.Errorf("effBase %d floor %d headroom %d committed %d", v.EffBase, v.Floor, v.Headroom, v.Committed)
+	}
+}
+
+func checkStaleGuestData(t *testing.T, _ Snapshot, v VMView) {
+	t.Helper()
+	if v.State != VMUnknown || v.UsedKnown || v.EffBase != 4*Gi || v.Floor != 6*Gi {
+		t.Errorf("state %s usedKnown %v effBase %d floor %d", v.State, v.UsedKnown, v.EffBase, v.Floor)
+	}
+}
+
+func checkStaleHostData(t *testing.T, s Snapshot, v VMView) {
+	t.Helper()
+	if !s.Frozen || v.State != VMMissing || v.Committed != 8*Gi {
+		t.Errorf("frozen %v state %s committed %d", s.Frozen, v.State, v.Committed)
+	}
+}
+
+func checkGuestAgentNotReady(t *testing.T, _ Snapshot, v VMView) {
+	t.Helper()
+	if v.State != VMUnknown {
+		t.Errorf("state %s", v.State)
+	}
+}
+
+func checkNeverObserved(t *testing.T, _ Snapshot, v VMView) {
+	t.Helper()
+	if v.State != VMMissing || v.Assigned != 0 || v.Committed != 4*Gi || v.Headroom != -4*Gi {
+		t.Errorf("state %s assigned %d committed %d headroom %d", v.State, v.Assigned, v.Committed, v.Headroom)
+	}
+}
+
+func checkCompleteVMList(t *testing.T, s Snapshot, v VMView) {
+	t.Helper()
+	if v.State != VMMissing || v.Assigned != 0 || len(s.VMs) != 4 {
+		t.Errorf("state %s assigned %d VMs %d", v.State, v.Assigned, len(s.VMs))
+	}
+}
+
+func checkOlderObservations(t *testing.T, s Snapshot, v VMView) {
+	t.Helper()
+	if s.HostFree != 12*Gi || v.Assigned != 8*Gi || v.Used != 2*Gi {
+		t.Errorf("hostFree %d assigned %d used %d", s.HostFree, v.Assigned, v.Used)
 	}
 }
 

@@ -56,137 +56,131 @@ func TestQueueOrder(t *testing.T) {
 // delta == 0 and no candidate VM in common with it; a waiting request whose
 // candidates are all fixed only keeps later requests off those VMs.
 func TestQueueRule(t *testing.T) {
-	type want struct {
-		vm     VMName
-		fits   bool
-		delta  int64
-		reason Reason
-	}
 	for _, tc := range []struct {
 		name  string
 		ahead []Request
 		req   Request
-		want  []want
+		want  []wantFit
 	}{
 		{
 			name: "alone, needs resize from pool",
 			req:  ext("r", "vm-a", 5*Gi),
-			want: []want{{"vm-a", true, 3 * Gi, ""}},
+			want: []wantFit{{"vm-a", true, 3 * Gi, ""}},
 		},
 		{
 			name:  "behind pool-short head: pool-drawing request waits",
 			ahead: []Request{ext("h", "vm-a", 20*Gi)},
 			req:   ext("r", "vm-b", 3*Gi),
-			want:  []want{{"vm-b", false, 1 * Gi, ReasonQueued}},
+			want:  []wantFit{{"vm-b", false, 1 * Gi, ReasonQueued}},
 		},
 		{
 			name:  "behind head: delta 0 on a different VM is granted",
 			ahead: []Request{ext("h", "vm-a", 20*Gi)},
 			req:   ext("r", "vm-b", 1*Gi),
-			want:  []want{{"vm-b", true, 0, ""}},
+			want:  []wantFit{{"vm-b", true, 0, ""}},
 		},
 		{
 			name:  "behind head: delta 0 on the head's VM waits",
 			ahead: []Request{ext("h", "vm-a", 20*Gi)},
 			req:   ext("r", "vm-a", 1*Gi),
-			want:  []want{{"vm-a", false, 0, ReasonQueued}},
+			want:  []wantFit{{"vm-a", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "behind head pod: overlapping candidate sets wait on every VM",
 			ahead: []Request{pod("h", 20*Gi, "vm-a", "vm-b")},
 			req:   pod("r", 1*Gi, "vm-b", "linux-node-1"),
-			want:  []want{{"vm-b", false, 0, ReasonQueued}, {"linux-node-1", false, 0, ReasonQueued}},
+			want:  []wantFit{{"vm-b", false, 0, ReasonQueued}, {"linux-node-1", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "behind head pod: disjoint candidates with delta 0 pass",
 			ahead: []Request{pod("h", 20*Gi, "vm-a")},
 			req:   pod("r", 1*Gi, "vm-b", "linux-node-1"),
-			want:  []want{{"vm-b", true, 0, ""}, {"linux-node-1", true, 0, ""}},
+			want:  []wantFit{{"vm-b", true, 0, ""}, {"linux-node-1", true, 0, ""}},
 		},
 		{
 			name:  "behind fixed-only head: pool-drawing request on another VM is granted",
 			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
 			req:   ext("r", "vm-a", 5*Gi),
-			want:  []want{{"vm-a", true, 3 * Gi, ""}},
+			want:  []wantFit{{"vm-a", true, 3 * Gi, ""}},
 		},
 		{
 			name:  "behind fixed-only head: request on its VM waits",
 			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
 			req:   pod("r", 1*Gi, "linux-node-1"),
-			want:  []want{{"linux-node-1", false, 0, ReasonQueued}},
+			want:  []wantFit{{"linux-node-1", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "behind fixed-only head: a pod may use its other candidates",
 			ahead: []Request{pod("h", 20*Gi, "linux-node-1")},
 			req:   pod("r", 3*Gi, "vm-b", "linux-node-1"),
-			want:  []want{{"vm-b", true, 1 * Gi, ""}, {"linux-node-1", false, 0, ReasonQueued}},
+			want:  []wantFit{{"vm-b", true, 1 * Gi, ""}, {"linux-node-1", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "fixed-only head then a waiting pool user: pool draws wait again",
 			ahead: []Request{pod("h", 20*Gi, "linux-node-1"), ext("h2", "vm-a", 20*Gi)},
 			req:   ext("r", "vm-b", 3*Gi),
-			want:  []want{{"vm-b", false, 1 * Gi, ReasonQueued}},
+			want:  []wantFit{{"vm-b", false, 1 * Gi, ReasonQueued}},
 		},
 		{
 			name:  "waiting requests behind the head lock their candidates too",
 			ahead: []Request{ext("h", "vm-a", 20*Gi), ext("q", "vm-b", 3*Gi)},
 			req:   ext("r", "vm-b", 1*Gi),
-			want:  []want{{"vm-b", false, 0, ReasonQueued}},
+			want:  []wantFit{{"vm-b", false, 0, ReasonQueued}},
 		},
 		{
 			name:  "earlier fitting request uses up the pool",
 			ahead: []Request{ext("a", "vm-a", 7*Gi)}, // delta 5Gi, pool left 3Gi
 			req:   ext("r", "vm-b", 6*Gi),            // delta 4Gi
-			want:  []want{{"vm-b", false, 4 * Gi, ReasonPoolShort}},
+			want:  []wantFit{{"vm-b", false, 4 * Gi, ReasonPoolShort}},
 		},
 		{
 			name:  "earlier fitting request uses up the VM's headroom",
 			ahead: []Request{ext("a", "vm-a", 2*Gi)},
 			req:   ext("r", "vm-a", 1*Gi),
-			want:  []want{{"vm-a", true, 1 * Gi, ""}},
+			want:  []wantFit{{"vm-a", true, 1 * Gi, ""}},
 		},
 		{
 			name:  "pod without candidates is skipped, not a head",
 			ahead: []Request{pod("p", 20*Gi)},
 			req:   ext("r", "vm-a", 5*Gi),
-			want:  []want{{"vm-a", true, 3 * Gi, ""}},
+			want:  []wantFit{{"vm-a", true, 3 * Gi, ""}},
 		},
 		{
 			name:  "earlier pod is assumed on its best VM (delta 0, most headroom)",
 			ahead: []Request{pod("p", 2*Gi, "vm-a", "linux-node-1")},
 			req:   ext("r", "vm-a", 2*Gi),
-			want:  []want{{"vm-a", true, 0, ""}},
+			want:  []wantFit{{"vm-a", true, 0, ""}},
 		},
 		{
 			name:  "earlier pod needing resize everywhere takes the smallest delta",
 			ahead: []Request{pod("p", 5*Gi, "vm-a", "vm-dm")}, // vm-a delta 3Gi, vm-dm 5Gi
 			req:   ext("r", "vm-b", 8*Gi),                     // delta 6Gi > 8−3
-			want:  []want{{"vm-b", false, 6 * Gi, ReasonPoolShort}},
+			want:  []wantFit{{"vm-b", false, 6 * Gi, ReasonPoolShort}},
 		},
 		{
 			name: "fixed VM fits only from headroom",
 			req:  pod("r", 10*Gi, "linux-node-1"),
-			want: []want{{"linux-node-1", false, 1 * Gi, ReasonNoHeadroom}},
+			want: []wantFit{{"linux-node-1", false, 1 * Gi, ReasonNoHeadroom}},
 		},
 		{
 			name: "fixed VM headroom exactly enough",
 			req:  pod("r", 9*Gi, "linux-node-1"),
-			want: []want{{"linux-node-1", true, 0, ""}},
+			want: []wantFit{{"linux-node-1", true, 0, ""}},
 		},
 		{
 			name: "policy max bounds the grow",
 			req:  ext("r", "vm-b", 19*Gi), // delta 17Gi → 25Gi > 24Gi
-			want: []want{{"vm-b", false, 17 * Gi, ReasonExceedsMax}},
+			want: []wantFit{{"vm-b", false, 17 * Gi, ReasonExceedsMax}},
 		},
 		{
 			name: "probe always grows at least one step",
 			req:  Request{ID: "r", Kind: KindProbe, VM: "vm-a", Bytes: 256 * Mi},
-			want: []want{{"vm-a", true, 256 * Mi, ""}},
+			want: []wantFit{{"vm-a", true, 256 * Mi, ""}},
 		},
 		{
 			name: "unknown and non-candidate VMs",
 			req:  ext("r", "vm-a", 1*Gi),
-			want: []want{{"vm-a", true, 0, ""}, {"vm-b", false, 0, ReasonNotCandidate}, {"nope", false, 0, ReasonUnknownVM}},
+			want: []wantFit{{"vm-a", true, 0, ""}, {"vm-b", false, 0, ReasonNotCandidate}, {"nope", false, 0, ReasonUnknownVM}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -196,30 +190,52 @@ func TestQueueRule(t *testing.T) {
 			}
 			f.clk.Advance(time.Millisecond)
 			f.enqueue(tc.req)
-			vms := make([]VMName, len(tc.want))
-			for i, w := range tc.want {
-				vms[i] = w.vm
-			}
-			got := f.l.Evaluate(tc.req.ID, vms)
-			for i, w := range tc.want {
-				g := got[i]
-				if g.VM != w.vm || g.Fits != w.fits || g.Delta != w.delta || g.Reason != w.reason {
-					t.Errorf("fit[%d] = %+v, want %+v", i, g, w)
-				}
-				if g.Position != Position(len(tc.ahead)+1) {
-					t.Errorf("fit[%d] position %d", i, g.Position)
-				}
-			}
-			// Reserve agrees with Evaluate.
-			res, err := f.l.Reserve(tc.req.ID, tc.want[0].vm)
-			if tc.want[0].fits {
-				if err != nil || res.Delta != tc.want[0].delta {
-					t.Errorf("Reserve = %+v, %v", res, err)
-				}
-			} else if reasonOf(err) != tc.want[0].reason {
-				t.Errorf("Reserve error %v, want reason %s", err, tc.want[0].reason)
-			}
+			checkFits(t, f.l, tc.req.ID, tc.want, Position(len(tc.ahead)+1))
+			checkReserveAgrees(t, f.l, tc.req.ID, tc.want[0])
 		})
+	}
+}
+
+// wantFit is the expected part of a Fit.
+type wantFit struct {
+	vm     VMName
+	fits   bool
+	delta  int64
+	reason Reason
+}
+
+// checkFits evaluates id on the VMs of want, in that order, and checks each
+// fit and the request's queue position.
+func checkFits(t *testing.T, l *Ledger, id RequestID, want []wantFit, pos Position) {
+	t.Helper()
+	vms := make([]VMName, len(want))
+	for i, w := range want {
+		vms[i] = w.vm
+	}
+	got := l.Evaluate(id, vms)
+	for i, w := range want {
+		g := got[i]
+		if g.VM != w.vm || g.Fits != w.fits || g.Delta != w.delta || g.Reason != w.reason {
+			t.Errorf("fit[%d] = %+v, want %+v", i, g, w)
+		}
+		if g.Position != pos {
+			t.Errorf("fit[%d] position %d", i, g.Position)
+		}
+	}
+}
+
+// checkReserveAgrees checks that Reserve on w.vm agrees with Evaluate.
+func checkReserveAgrees(t *testing.T, l *Ledger, id RequestID, w wantFit) {
+	t.Helper()
+	res, err := l.Reserve(id, w.vm)
+	if !w.fits {
+		if reasonOf(err) != w.reason {
+			t.Errorf("Reserve error %v, want reason %s", err, w.reason)
+		}
+		return
+	}
+	if err != nil || res.Delta != w.delta {
+		t.Errorf("Reserve = %+v, %v", res, err)
 	}
 }
 
@@ -337,20 +353,7 @@ func TestDispatchable(t *testing.T) {
 
 func TestEnqueueAndCandidates(t *testing.T) {
 	f := standard(t)
-	for _, tc := range []struct {
-		r  Request
-		is error
-	}{
-		{Request{Kind: KindPod, Bytes: 1}, ErrInvalidRequest},
-		{Request{ID: "x", Kind: "Other", Bytes: 1}, ErrInvalidRequest},
-		{Request{ID: "x", Kind: KindPod}, ErrInvalidRequest},
-		{Request{ID: "x", Kind: KindExternal, Bytes: 1}, ErrInvalidRequest},
-		{Request{ID: "x", Kind: KindExternal, VM: "nope", Bytes: 1}, ErrUnknownVM},
-	} {
-		if _, err := f.l.Enqueue(tc.r); !errors.Is(err, tc.is) {
-			t.Errorf("Enqueue(%+v) = %v, want %v", tc.r, err, tc.is)
-		}
-	}
+	checkEnqueueRejects(t, f.l)
 	pos := f.enqueue(Request{ID: "e", Kind: KindExternal, VM: "vm-a", Bytes: Gi, Candidates: []VMName{"vm-b"}})
 	if pos != 1 {
 		t.Errorf("position %d", pos)
@@ -385,6 +388,26 @@ func TestEnqueueAndCandidates(t *testing.T) {
 	}
 	if err := f.l.SetCandidates("p", nil); !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("SetCandidates after grant: %v", err)
+	}
+}
+
+// checkEnqueueRejects checks that invalid requests and unknown VMs are
+// rejected.
+func checkEnqueueRejects(t *testing.T, l *Ledger) {
+	t.Helper()
+	for _, tc := range []struct {
+		r  Request
+		is error
+	}{
+		{Request{Kind: KindPod, Bytes: 1}, ErrInvalidRequest},
+		{Request{ID: "x", Kind: "Other", Bytes: 1}, ErrInvalidRequest},
+		{Request{ID: "x", Kind: KindPod}, ErrInvalidRequest},
+		{Request{ID: "x", Kind: KindExternal, Bytes: 1}, ErrInvalidRequest},
+		{Request{ID: "x", Kind: KindExternal, VM: "nope", Bytes: 1}, ErrUnknownVM},
+	} {
+		if _, err := l.Enqueue(tc.r); !errors.Is(err, tc.is) {
+			t.Errorf("Enqueue(%+v) = %v, want %v", tc.r, err, tc.is)
+		}
 	}
 }
 

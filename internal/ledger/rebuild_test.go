@@ -41,20 +41,7 @@ func rec(id RequestID, vm VMName, bytes int64, p Phase, enq time.Duration) Lease
 // base 4Gi, floor without leases 6Gi. Granted leases are Lost only when
 // assigned < base + Σ leased; Reserved/Resizing ones need floor.
 func TestRebuild(t *testing.T) {
-	type act struct {
-		kind   RecoveryKind
-		id     RequestID
-		to     Phase
-		reason Reason
-	}
-	for _, tc := range []struct {
-		name      string
-		obs       []Observation // nil: standardObs
-		records   []LeaseRecord
-		actions   []act
-		phases    map[RequestID]Phase
-		positions map[RequestID]Position
-	}{
+	for _, tc := range []rebuildCase{
 		{
 			name: "Pending: re-enqueued at original enqueuedAt",
 			records: []LeaseRecord{
@@ -190,54 +177,97 @@ func TestRebuild(t *testing.T) {
 				obs = standardObs(t0)
 			}
 			l, actions := Rebuild(testConfig(), tc.records, obs, clk)
-			var got []act
-			for _, a := range actions {
-				got = append(got, act{a.Kind, a.ID, a.To, a.Reason})
-				if (a.Kind == RecoveryVerify) != (a.Reservation != nil) {
-					t.Errorf("%s: reservation %v for kind %s", a.ID, a.Reservation, a.Kind)
-				}
-			}
-			if d := cmp.Diff(tc.actions, got, cmp.AllowUnexported(act{})); d != "" {
-				t.Errorf("actions (-want +got):\n%s", d)
-			}
-			for id, want := range tc.phases {
-				lv, ok := l.Lease(id)
-				if !ok {
-					lv.Phase = ""
-				}
-				if lv.Phase != want {
-					t.Errorf("%s: phase %q, want %q", id, lv.Phase, want)
-				}
-				if p, ok := tc.positions[id]; ok && lv.Position != p {
-					t.Errorf("%s: position %d, want %d", id, lv.Position, p)
-				}
-			}
-			// Verify actions can be committed by the executor.
-			l.SetAgentState(DefaultHostAgent, AgentReady)
-			for _, a := range actions {
-				if a.Kind == RecoveryVerify {
-					if a.Reservation.Delta != 0 || a.Reservation.Target != 8*Gi {
-						t.Errorf("verify reservation %+v", a.Reservation)
-					}
-					if err := l.Commit(*a.Reservation, ResizeOutcome{}); err != nil {
-						t.Errorf("Commit after Verify: %v", err)
-					}
-				}
-			}
-			// Idempotence: the same inputs and the rebuilt ledger's own records
-			// produce the same ledger.
-			l1, a1 := Rebuild(testConfig(), tc.records, obs, clk)
-			l2, a2 := Rebuild(testConfig(), tc.records, obs, clk)
-			if d := cmp.Diff(a1, a2); d != "" {
-				t.Errorf("actions not deterministic:\n%s", d)
-			}
-			if d := cmp.Diff(l1.Snapshot(), l2.Snapshot()); d != "" {
-				t.Errorf("ledger not deterministic:\n%s", d)
-			}
-			l3, _ := Rebuild(testConfig(), l1.Records(), obs, clk)
-			if d := cmp.Diff(l1.Snapshot(), l3.Snapshot()); d != "" {
-				t.Errorf("rebuild from own records differs:\n%s", d)
-			}
+			checkRecoveryActions(t, tc.actions, actions)
+			checkRebuiltLeases(t, l, tc.phases, tc.positions)
+			checkVerifyCommits(t, l, actions)
+			checkRebuildDeterministic(t, tc.records, obs, clk)
 		})
+	}
+}
+
+// act is the part of a RecoveryAction TestRebuild compares.
+type act struct {
+	kind   RecoveryKind
+	id     RequestID
+	to     Phase
+	reason Reason
+}
+
+type rebuildCase struct {
+	name      string
+	obs       []Observation // nil: standardObs
+	records   []LeaseRecord
+	actions   []act
+	phases    map[RequestID]Phase
+	positions map[RequestID]Position
+}
+
+// checkRecoveryActions compares the actions and checks that exactly the
+// Verify actions carry a reservation.
+func checkRecoveryActions(t *testing.T, want []act, actions []RecoveryAction) {
+	t.Helper()
+	var got []act
+	for _, a := range actions {
+		got = append(got, act{a.Kind, a.ID, a.To, a.Reason})
+		if (a.Kind == RecoveryVerify) != (a.Reservation != nil) {
+			t.Errorf("%s: reservation %v for kind %s", a.ID, a.Reservation, a.Kind)
+		}
+	}
+	if d := cmp.Diff(want, got, cmp.AllowUnexported(act{})); d != "" {
+		t.Errorf("actions (-want +got):\n%s", d)
+	}
+}
+
+// checkRebuiltLeases checks each lease's phase ("" for not loaded) and, where
+// given, its queue position.
+func checkRebuiltLeases(t *testing.T, l *Ledger, phases map[RequestID]Phase, positions map[RequestID]Position) {
+	t.Helper()
+	for id, want := range phases {
+		lv, ok := l.Lease(id)
+		if !ok {
+			lv.Phase = ""
+		}
+		if lv.Phase != want {
+			t.Errorf("%s: phase %q, want %q", id, lv.Phase, want)
+		}
+		if p, ok := positions[id]; ok && lv.Position != p {
+			t.Errorf("%s: position %d, want %d", id, lv.Position, p)
+		}
+	}
+}
+
+// checkVerifyCommits checks that Verify actions can be committed by the
+// executor.
+func checkVerifyCommits(t *testing.T, l *Ledger, actions []RecoveryAction) {
+	t.Helper()
+	l.SetAgentState(DefaultHostAgent, AgentReady)
+	for _, a := range actions {
+		if a.Kind != RecoveryVerify {
+			continue
+		}
+		if a.Reservation.Delta != 0 || a.Reservation.Target != 8*Gi {
+			t.Errorf("verify reservation %+v", a.Reservation)
+		}
+		if err := l.Commit(*a.Reservation, ResizeOutcome{}); err != nil {
+			t.Errorf("Commit after Verify: %v", err)
+		}
+	}
+}
+
+// checkRebuildDeterministic checks idempotence: the same inputs and the
+// rebuilt ledger's own records produce the same ledger.
+func checkRebuildDeterministic(t *testing.T, records []LeaseRecord, obs []Observation, clk Clock) {
+	t.Helper()
+	l1, a1 := Rebuild(testConfig(), records, obs, clk)
+	l2, a2 := Rebuild(testConfig(), records, obs, clk)
+	if d := cmp.Diff(a1, a2); d != "" {
+		t.Errorf("actions not deterministic:\n%s", d)
+	}
+	if d := cmp.Diff(l1.Snapshot(), l2.Snapshot()); d != "" {
+		t.Errorf("ledger not deterministic:\n%s", d)
+	}
+	l3, _ := Rebuild(testConfig(), l1.Records(), obs, clk)
+	if d := cmp.Diff(l1.Snapshot(), l3.Snapshot()); d != "" {
+		t.Errorf("rebuild from own records differs:\n%s", d)
 	}
 }
