@@ -31,7 +31,10 @@ jobs:
           make generate
           git add --intent-to-add .
           git diff --exit-code
-      - name: Test
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+      - name: Envtest binaries
+        run: make envtest
+      - name: Test (unit and envtest)
         run: make test
       - name: Build
         run: make build build-agent-linux build-agent-windows

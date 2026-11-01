@@ -12,17 +12,27 @@ BUF_AGAINST ?= .git\#branch=main
 
 export CGO_ENABLED := 0
 
+# envtest binaries (kube-apiserver, etcd) match the Kubernetes minor of the
+# k8s.io modules in go.mod: k8s.io/apimachinery v0.37.x -> 1.37.x.
+ENVTEST_K8S_VERSION ?= $(shell $(GO) list -m -f '{{.Version}}' k8s.io/apimachinery | sed -E 's/^v0\.([0-9]+)\..*/1.\1.x/')
+ENVTEST_DIR         ?= $(CURDIR)/.envtest
+SETUP_ENVTEST       := $(TOOL) setup-envtest use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_DIR) -p path
+
 .PHONY: all
 all: generate lint test build
 
 ##@ Generate
 
 .PHONY: generate
-generate: manifests proto ## Run all code generators.
-	$(TOOL) controller-gen object paths="./..."
+generate: deepcopy manifests proto ## Run all code generators.
+
+.PHONY: deepcopy
+deepcopy: ## Generate DeepCopy methods for the API types.
+	$(TOOL) controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 .PHONY: manifests
-manifests: ## Generate CRDs and RBAC (filled in by WP 1.2).
+manifests: ## Generate CRDs into config/crd/bases.
+	$(TOOL) controller-gen crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: proto
 proto: ## Generate gRPC code from proto/ into internal/agentapi/ (buf).
@@ -32,8 +42,13 @@ proto: ## Generate gRPC code from proto/ into internal/agentapi/ (buf).
 ##@ Verify
 
 .PHONY: test
-test: ## Run unit tests with the race detector.
-	CGO_ENABLED=1 $(GO) test -race ./...
+test: ## Run unit and envtest tests with the race detector.
+	@assets="$$($(SETUP_ENVTEST))" && echo "KUBEBUILDER_ASSETS=$$assets" && \
+		KUBEBUILDER_ASSETS="$$assets" CGO_ENABLED=1 $(GO) test -race ./...
+
+.PHONY: envtest
+envtest: ## Download envtest binaries and print their directory (export as KUBEBUILDER_ASSETS).
+	@$(SETUP_ENVTEST)
 
 .PHONY: lint
 lint: lint-go lint-proto ## Run all linters.
