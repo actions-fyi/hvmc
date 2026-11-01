@@ -193,10 +193,8 @@ func (l *Ledger) Observe(o Observation) {
 }
 
 func (l *Ledger) observe(o Observation) {
-	if h := o.Host; h != nil && (!l.host.seen || !h.ObservedAt.Before(l.host.observedAt)) {
-		l.host = hostState{seen: true, total: h.Total, free: h.Free, observedAt: h.ObservedAt}
-		// Only strictly older growth is surely reflected in this observation.
-		l.debts = slices.DeleteFunc(l.debts, func(d freeDebt) bool { return d.at.Before(h.ObservedAt) })
+	if o.Host != nil {
+		l.observeHost(o.Host)
 	}
 	listed := make(map[VMName]bool, len(o.VMs))
 	for _, vo := range o.VMs {
@@ -204,22 +202,43 @@ func (l *Ledger) observe(o Observation) {
 		l.observeVM(vo.Name, vo.Assigned, vo.Startup, vo.Dynamic, vo.ObservedAt)
 	}
 	if o.CompleteVMList {
-		for name, v := range l.vms {
-			if listed[name] {
-				continue
-			}
-			v.hostSeen, v.assigned, v.startup, v.dynamic = false, 0, 0, nil
-			if v.guest == nil && v.shrink == nil && v.holdTarget == 0 {
-				delete(l.vms, name)
-			}
+		l.forgetUnlisted(listed)
+	}
+	if o.Guest != nil {
+		l.observeGuest(o.Guest)
+	}
+}
+
+// observeHost applies host data unless newer data is present.
+func (l *Ledger) observeHost(h *HostObservation) {
+	if l.host.seen && h.ObservedAt.Before(l.host.observedAt) {
+		return
+	}
+	l.host = hostState{seen: true, total: h.Total, free: h.Free, observedAt: h.ObservedAt}
+	// Only strictly older growth is surely reflected in this observation.
+	l.debts = slices.DeleteFunc(l.debts, func(d freeDebt) bool { return d.at.Before(h.ObservedAt) })
+}
+
+// forgetUnlisted clears the host-side data of VMs missing from a complete VM
+// list and drops VMs that keep no other state.
+func (l *Ledger) forgetUnlisted(listed map[VMName]bool) {
+	for name, v := range l.vms {
+		if listed[name] {
+			continue
+		}
+		v.hostSeen, v.assigned, v.startup, v.dynamic = false, 0, 0, nil
+		if v.guest == nil && v.shrink == nil && v.holdTarget == 0 {
+			delete(l.vms, name)
 		}
 	}
-	if g := o.Guest; g != nil {
-		v := l.vm(g.VM)
-		if v.guest == nil || !g.ObservedAt.Before(v.guest.ObservedAt) {
-			cp := *g
-			v.guest = &cp
-		}
+}
+
+// observeGuest applies guest data unless newer data is present.
+func (l *Ledger) observeGuest(g *GuestObservation) {
+	v := l.vm(g.VM)
+	if v.guest == nil || !g.ObservedAt.Before(v.guest.ObservedAt) {
+		cp := *g
+		v.guest = &cp
 	}
 }
 

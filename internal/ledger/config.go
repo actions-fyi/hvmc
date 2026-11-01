@@ -149,46 +149,66 @@ func (c Config) Validate() error {
 }
 
 func (v VMConfig) validate(seen map[VMName]bool) []error {
-	var errs []error
-	fail := func(format string, args ...any) {
-		errs = append(errs, fmt.Errorf("vm %q: "+format, append([]any{v.Name}, args...)...))
-	}
+	p := &vmProblems{name: v.Name}
 	if v.Name == "" {
-		errs = append(errs, errors.New("vm with empty name"))
+		p.errs = append(p.errs, errors.New("vm with empty name"))
 	}
 	if seen[v.Name] {
-		fail("duplicate name")
+		p.fail("duplicate name")
 	}
 	seen[v.Name] = true
+	v.validateMode(p)
+	if v.Base < 0 || (v.Margin != nil && *v.Margin < 0) {
+		p.fail("base and margin must not be negative")
+	}
+	v.validatePolicy(p)
+	if v.Probe && (v.GuestOS != GuestWindows || v.Mode != ModeStatic || v.Node != "") {
+		p.fail("probe VMs must be windows, static and not mapped to a node")
+	}
+	return p.errs
+}
+
+// vmProblems collects the validation errors of one VM.
+type vmProblems struct {
+	name VMName
+	errs []error
+}
+
+// fail records a problem, prefixed with the VM's name.
+func (p *vmProblems) fail(format string, args ...any) {
+	p.errs = append(p.errs, fmt.Errorf("vm %q: "+format, append([]any{p.name}, args...)...))
+}
+
+// validateMode checks the mode and guest OS and their combination.
+func (v VMConfig) validateMode(p *vmProblems) {
 	switch v.Mode {
 	case ModeFixed, ModeStatic, ModeDynamic:
 	default:
-		fail("mode %q: want fixed, static or dynamic", v.Mode)
+		p.fail("mode %q: want fixed, static or dynamic", v.Mode)
 	}
 	switch v.GuestOS {
 	case GuestLinux:
 		if v.Mode != ModeFixed {
-			fail("linux guests must use mode fixed")
+			p.fail("linux guests must use mode fixed")
 		}
 	case GuestWindows:
 	default:
-		fail("guestOS %q: want linux or windows", v.GuestOS)
+		p.fail("guestOS %q: want linux or windows", v.GuestOS)
 	}
-	if v.Base < 0 || (v.Margin != nil && *v.Margin < 0) {
-		fail("base and margin must not be negative")
+}
+
+// validatePolicy checks the optional resize policy.
+func (v VMConfig) validatePolicy(p *vmProblems) {
+	pol := v.Policy
+	if pol == nil {
+		return
 	}
-	if v.Policy != nil {
-		if v.Mode == ModeFixed {
-			fail("policy is only allowed for static and dynamic VMs")
-		}
-		if v.Policy.Min < 0 || v.Policy.Max < 0 || (v.Policy.Max > 0 && v.Policy.Min > v.Policy.Max) {
-			fail("policy needs 0 ≤ min ≤ max")
-		}
+	if v.Mode == ModeFixed {
+		p.fail("policy is only allowed for static and dynamic VMs")
 	}
-	if v.Probe && (v.GuestOS != GuestWindows || v.Mode != ModeStatic || v.Node != "") {
-		fail("probe VMs must be windows, static and not mapped to a node")
+	if pol.Min < 0 || pol.Max < 0 || (pol.Max > 0 && pol.Min > pol.Max) {
+		p.fail("policy needs 0 ≤ min ≤ max")
 	}
-	return errs
 }
 
 // normalize returns a deep copy of c with zero-valued Step, StaleAfter,

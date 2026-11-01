@@ -58,13 +58,29 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 	recs := slices.Clone(records)
 	slices.SortStableFunc(recs, compareRecords)
 
-	actions := make([]RecoveryAction, len(recs))
-	var granted, inflight []int
+	actions, granted, inflight := l.loadRecords(recs)
+	sortByGrant(recs, granted)
+	for _, i := range granted {
+		l.recoverGranted(l.leases[recs[i].Request.ID], &actions[i])
+	}
+	for _, i := range inflight {
+		l.recoverInflight(l.leases[recs[i].Request.ID], &actions[i])
+	}
+	l.refresh("")
+	return l, actions
+}
+
+// loadRecords inserts the loadable records of recs (sorted by compareRecords)
+// and returns one action per record. Pending leases are final; the indexes of
+// Granted and of Reserved/Resizing records are returned for the later passes,
+// their leases inserted with a placeholder phase.
+func (l *Ledger) loadRecords(recs []LeaseRecord) (actions []RecoveryAction, granted, inflight []int) {
+	actions = make([]RecoveryAction, len(recs))
 	seen := map[RequestID]bool{}
 	for i, rec := range recs {
 		r := rec.Request.clone()
 		actions[i] = RecoveryAction{Kind: RecoveryDrop, ID: r.ID, VM: r.VM, From: rec.Phase, To: rec.Phase}
-		if seen[r.ID] || r.validate() != nil || (rec.Phase.holdsMemory() && r.VM == "") {
+		if !loadable(rec.Phase, r, seen) {
 			actions[i].Reason = ReasonInvalid
 			continue
 		}
@@ -77,11 +93,11 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 			l.insert(r, PhasePending)
 			actions[i].Kind = RecoveryEnqueue
 		case PhaseGranted:
-			le := l.insert(r, PhaseFailed) // placeholder, decided below
+			le := l.insert(r, PhaseFailed) // placeholder, decided by recoverGranted
 			le.grantedAt = rec.GrantedAt
 			granted = append(granted, i)
 		case PhaseReserved, PhaseResizing:
-			l.insert(r, PhaseFailed)
+			l.insert(r, PhaseFailed) // placeholder, decided by recoverInflight
 			inflight = append(inflight, i)
 		case PhaseReleased, PhaseFailed:
 			// terminal: not loaded
@@ -89,46 +105,64 @@ func Rebuild(cfg Config, records []LeaseRecord, obs []Observation, clk Clock) (*
 			actions[i].Reason = ReasonInvalid
 		}
 	}
+	return actions, granted, inflight
+}
 
-	slices.SortStableFunc(granted, func(a, b int) int {
+// loadable reports whether a record in phase p with request r may be loaded:
+// its ID is not seen before, the request is valid, and a lease holding memory
+// names its VM.
+func loadable(p Phase, r Request, seen map[RequestID]bool) bool {
+	if seen[r.ID] || r.validate() != nil {
+		return false
+	}
+	return !p.holdsMemory() || r.VM != ""
+}
+
+// sortByGrant orders the record indexes idx by GrantedAt, then request ID.
+func sortByGrant(recs []LeaseRecord, idx []int) {
+	slices.SortStableFunc(idx, func(a, b int) int {
 		if c := recs[a].GrantedAt.Compare(recs[b].GrantedAt); c != 0 {
 			return c
 		}
 		return strings.Compare(string(recs[a].Request.ID), string(recs[b].Request.ID))
 	})
-	for _, i := range granted {
-		le := l.leases[recs[i].Request.ID]
-		le.phase = PhaseGranted
-		if covered, known := l.covers(le.req.VM, true); !known {
-			actions[i].Kind, actions[i].Reason = RecoveryKeep, ReasonVMDataMissing
-		} else if covered {
-			actions[i].Kind = RecoveryKeep
-		} else {
-			delete(l.leases, le.req.ID)
-			actions[i].Kind, actions[i].To, actions[i].Reason = RecoveryLost, PhaseFailed, ReasonLost
-		}
-	}
+}
 
-	for _, i := range inflight {
-		le := l.leases[recs[i].Request.ID]
-		le.phase = PhaseResizing
-		v := l.vm(le.req.VM)
-		le.res = Reservation{
-			ID: le.req.ID, VM: le.req.VM, Mode: l.vmCfg[le.req.VM].Mode, Bytes: le.req.Bytes,
-			AssignedBefore: v.assigned, Target: v.assigned,
-		}
-		if covered, known := l.covers(le.req.VM, false); known && covered {
-			l.resSeq++
-			le.res.Seq = l.resSeq
-			res := le.res
-			actions[i].Kind, actions[i].To, actions[i].Reservation = RecoveryVerify, PhaseResizing, &res
-			continue
-		}
-		le.phase, le.res = PhasePending, Reservation{}
-		actions[i].Kind, actions[i].To = RecoveryRequeue, PhasePending
+// recoverGranted keeps a Granted lease while its VM covers base + Σ leased
+// (or has no fresh data) and drops it as Lost otherwise.
+func (l *Ledger) recoverGranted(le *lease, a *RecoveryAction) {
+	le.phase = PhaseGranted
+	covered, known := l.covers(le.req.VM, true)
+	switch {
+	case !known:
+		a.Kind, a.Reason = RecoveryKeep, ReasonVMDataMissing
+	case covered:
+		a.Kind = RecoveryKeep
+	default:
+		delete(l.leases, le.req.ID)
+		a.Kind, a.To, a.Reason = RecoveryLost, PhaseFailed, ReasonLost
 	}
-	l.refresh("")
-	return l, actions
+}
+
+// recoverInflight loads a Reserved/Resizing lease as Resizing with a
+// zero-delta reservation when its VM covers floor(vm), and requeues it as
+// Pending otherwise.
+func (l *Ledger) recoverInflight(le *lease, a *RecoveryAction) {
+	le.phase = PhaseResizing
+	v := l.vm(le.req.VM)
+	le.res = Reservation{
+		ID: le.req.ID, VM: le.req.VM, Mode: l.vmCfg[le.req.VM].Mode, Bytes: le.req.Bytes,
+		AssignedBefore: v.assigned, Target: v.assigned,
+	}
+	if covered, known := l.covers(le.req.VM, false); known && covered {
+		l.resSeq++
+		le.res.Seq = l.resSeq
+		res := le.res
+		a.Kind, a.To, a.Reservation = RecoveryVerify, PhaseResizing, &res
+		return
+	}
+	le.phase, le.res = PhasePending, Reservation{}
+	a.Kind, a.To = RecoveryRequeue, PhasePending
 }
 
 // covers reports whether vm's assignment covers the leases currently loaded.

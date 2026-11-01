@@ -147,33 +147,8 @@ func (l *Ledger) compute() *calc {
 	c := &calc{now: now, vms: map[VMName]*vmQ{}}
 	c.frozen = l.agentState(l.cfg.HostAgent) != AgentReady || !l.host.seen || !l.fresh(now, l.host.observedAt)
 
-	agg := map[VMName]*vmAgg{}
-	for _, le := range l.leases {
-		if !le.phase.holdsMemory() || le.req.VM == "" {
-			continue
-		}
-		a := agg[le.req.VM]
-		if a == nil {
-			a = &vmAgg{}
-			agg[le.req.VM] = a
-		}
-		a.leased += le.req.Bytes
-		if le.phase.inFlight() && le.res.Delta > 0 {
-			a.target = max(a.target, le.res.Target)
-			a.busy = true
-		}
-	}
-
-	for name := range l.vmCfg {
-		c.names = append(c.names, name)
-	}
-	for name, v := range l.vms {
-		if _, ok := l.vmCfg[name]; !ok && v.hostSeen {
-			c.names = append(c.names, name)
-		}
-	}
-	slices.SortFunc(c.names, func(a, b VMName) int { return strings.Compare(string(a), string(b)) })
-
+	agg := l.aggregateLeases()
+	c.names = l.vmNames()
 	for _, name := range c.names {
 		a := agg[name]
 		if a == nil {
@@ -193,6 +168,44 @@ func (l *Ledger) compute() *calc {
 	}
 	c.pool = poolOf(c.capacity, l.cfg.Reserve, c.committed, l.host.free-c.inflight-c.debt)
 	return c
+}
+
+// aggregateLeases sums, per VM, the bytes of leases holding memory and the
+// highest target of in-flight growing reservations.
+func (l *Ledger) aggregateLeases() map[VMName]*vmAgg {
+	agg := map[VMName]*vmAgg{}
+	for _, le := range l.leases {
+		if !le.phase.holdsMemory() || le.req.VM == "" {
+			continue
+		}
+		a := agg[le.req.VM]
+		if a == nil {
+			a = &vmAgg{}
+			agg[le.req.VM] = a
+		}
+		a.leased += le.req.Bytes
+		if le.phase.inFlight() && le.res.Delta > 0 {
+			a.target = max(a.target, le.res.Target)
+			a.busy = true
+		}
+	}
+	return agg
+}
+
+// vmNames returns the configured VMs plus the unmanaged VMs the host
+// reports, sorted by name.
+func (l *Ledger) vmNames() []VMName {
+	var names []VMName
+	for name := range l.vmCfg {
+		names = append(names, name)
+	}
+	for name, v := range l.vms {
+		if _, ok := l.vmCfg[name]; !ok && v.hostSeen {
+			names = append(names, name)
+		}
+	}
+	slices.SortFunc(names, func(a, b VMName) int { return strings.Compare(string(a), string(b)) })
+	return names
 }
 
 func (l *Ledger) vmQuantities(name VMName, now time.Time, a *vmAgg) *vmQ {
