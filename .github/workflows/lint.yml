@@ -4,12 +4,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read # Needs to read the workflow files
+
 jobs:
   actions:
     name: GitHub Actions
     runs-on: ubuntu-latest
-    permissions:
-      contents: read # Needs to read the workflow files
     concurrency:
       group: lint-${{ github.ref }}
     steps:
