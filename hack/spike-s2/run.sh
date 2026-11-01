@@ -246,13 +246,15 @@ check3() {
   sleep 2
   c2=$(wh_count)
 
-  local fmt='{schedulerName: .spec.schedulerName, managed: .metadata.annotations["hvmc.fax.fyi/managed"], resources: (.spec.initContainers // [] | map(.resources)) + (.spec.containers | map(.resources))}'
+  local fmt='{schedulerName: .spec.schedulerName, qosClass: .status.qosClass, managed: .metadata.annotations["hvmc.fax.fyi/managed"], resources: (.spec.initContainers // [] | map(.resources)) + (.spec.containers | map(.resources))}'
   echo "c3-ram     -> $(jq -c "$fmt" <<<"$ram" 2>/dev/null || echo "$ram")"
   echo "c3-ram-mem -> $(jq -c "$fmt" <<<"$ramm" 2>/dev/null || echo "$ramm")"
   echo "c3-init    -> $(jq -c "$fmt" <<<"$init" 2>/dev/null || echo "$init")"
   echo "c3-other   -> $other"
   seen=$(wh_log | jq -r --arg n c3-ram-mem 'select(.name==$n and .dryRun==false) | .containersIn.c["requests.memory"]')
   echo "webhook saw requests.memory of c3-ram-mem at admission: ${seen:-none}"
+  local qos
+  qos=$(jq -r '.status.qosClass' <<<"$ram" 2>/dev/null)
   echo "webhook calls: before=$c0 after-7-unrelated=$c1 after-4-hvmc=$c2"
   wh_log | jq -c '{unix_ms, name, generateName, dryRun, allowed}'
 
@@ -266,7 +268,7 @@ check3() {
   jq -e '.spec.schedulerName == "hvmc-scheduler" and .spec.initContainers[0].resources.requests.memory == "64Mi"' <<<"$init" >/dev/null 2>&1 ||
     { ok=0; notes+=("init-container-only pod not matched/mutated"); }
   [[ $other == denied* ]] || { ok=0; notes+=("pod naming another scheduler was not denied"); }
-  local text="webhook calls: 0 for 7 unrelated pods (plain, limits.memory, requests.cpu, explicit schedulerName, 2 Deployment pods via generateName: $((c1 - c0)) observed), $((c2 - c1)) for 4 hvmc pods; schedulerName and requests.memory=64Mi set at CREATE (container and init-container match); requests.memory seen by the webhook for limits.memory=2Gi: ${seen:-none} (already defaulted); other scheduler $other"
+  local text="webhook calls: 0 for 7 unrelated pods (plain, limits.memory, requests.cpu, explicit schedulerName, 2 Deployment pods via generateName: $((c1 - c0)) observed), $((c2 - c1)) for 4 hvmc pods; schedulerName and requests.memory=64Mi set at CREATE (container and init-container match); requests.memory seen by the webhook for limits.memory=2Gi: ${seen:-none} (already defaulted); qosClass after mutation: ${qos:-unknown}; other scheduler $other"
   if ((ok)); then record PASS 3 "$text"; else record FAIL 3 "$text; problems: ${notes[*]}"; fi
 }
 
