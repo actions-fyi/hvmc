@@ -445,6 +445,125 @@ Describe 'Measure-Settle' {
     }
 }
 
+Describe 'Get-RunExitCode' {
+    It 'returns <Expected> for outcome <Outcome> with restored <Restored>' -ForEach @(
+        @{ Outcome = 'completed'; Restored = $true; Expected = 0 }
+        @{ Outcome = 'aborted'; Restored = $true; Expected = 1 }
+        @{ Outcome = 'interrupted'; Restored = $true; Expected = 1 }
+        @{ Outcome = 'completed'; Restored = $false; Expected = 3 }
+        @{ Outcome = 'aborted'; Restored = $false; Expected = 3 }
+    ) {
+        Get-RunExitCode -Outcome $Outcome -Restored $Restored | Should -Be $Expected
+    }
+}
+
+Describe 'console output' {
+    BeforeEach {
+        $script:console = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { param($Object) $script:console.Add("$Object") }
+    }
+
+    It 'turns a step record into a summary row' {
+        $step = [ordered]@{
+            name = 'shrink-refused'; targetBytes = 256MB; expected = 'refusal'; observed = 'partially-applied'; matchesExpectation = $true
+            before = @{ assignedBytes = 4096MB }; settled = @{ assignedBytes = 1000MB; startupBytes = 256MB }; startupDiverged = $true; durationMs = 12
+            errors = @(@{ fullyQualifiedErrorId = 'OperationFailed,X' })
+        }
+        $row = ConvertTo-SummaryRow -Step $step
+        $row.'Target MiB' | Should -Be 256
+        $row.OK | Should -Be 'yes'
+        $row.'Assigned MiB' | Should -Be '4096 -> 1000'
+        $row.'Startup MiB' | Should -Be 256
+        $row.'Error id' | Should -Be 'OperationFailed,X'
+
+        $empty = ConvertTo-SummaryRow -Step ([ordered]@{ name = 'get-vm-missing'; targetBytes = $null; expected = 'refusal'; observed = 'read-failed'; matchesExpectation = $false; before = $null; settled = $null; startupDiverged = $null; durationMs = 1; errors = @() })
+        $empty.'Target MiB' | Should -Be ''
+        $empty.OK | Should -Be 'NO'
+        $empty.'Assigned MiB' | Should -Be 'n/a'
+        $empty.'Startup MiB' | Should -Be 'n/a'
+        $empty.'Error id' | Should -Be ''
+    }
+
+    It 'prints the probe operations in the summary' {
+        $doc = [ordered]@{
+            run = [ordered]@{ outcome = 'completed'; exitCode = 0; abortReason = $null }
+            steps = @(); restore = $null
+            serviceAccountProbe = [ordered]@{ account = 'NT SERVICE\x'; cleanupVerified = $true; result = @{ operations = @(@{ name = 'Get-VM'; result = 'succeeded' }) } }
+        }
+        Show-Summary -Document $doc -Path 'out/r.json'
+        $script:console | Should -Contain 'S1 Hyper-V characterization: completed (exit code 0)'
+        $script:console | Should -Contain '  service account probe (NT SERVICE\x): cleanup verified: True'
+        $script:console | Should -Contain '    Get-VM: succeeded'
+        $script:console | Should -Contain '  result: out/r.json'
+    }
+
+    It 'prints safety checks and status to the console and only the exit code to the output stream' {
+        New-FakeState -Notes 'not opted in'
+        Register-FakeHyperV
+        Mock Write-Host { param($Object) $script:console.Add("$Object") }
+        $out = @(Invoke-Characterization -VMName $script:VmName -OutDir (Join-Path $TestDrive 'refused') -SettleSeconds 0)
+        $out | Should -Be @(2)
+        $script:console[0] | Should -Be 'Safety checks:'
+        $script:console | Should -Contain '  [FAIL] opt-in-marker: Notes contain ''hvmc-probe'' as a separate word: False'
+        $script:console[-1] | Should -Be 'Refused: nothing was changed.'
+    }
+}
+
+Describe 'service account probe helpers' {
+    BeforeEach {
+        $script:native = [System.Collections.Generic.List[string]]::new()
+        Mock Invoke-NativeTool { $script:native.Add("$FilePath $($ArgumentList -join ' ')"); [ordered]@{ exitCode = $script:nativeExit; output = 'out' } }
+        $script:nativeExit = 0
+    }
+
+    It 'logs a setup tool and throws on a non-zero exit code' {
+        $log = [System.Collections.Generic.List[object]]::new()
+        Invoke-ProbeTool -Log $log -Action 'a' -FilePath 'x.exe' -ArgumentList @('1') -FailureMessage 'x failed'
+        $script:nativeExit = 5
+        { Invoke-ProbeTool -Log $log -Action 'b' -FilePath 'x.exe' -ArgumentList @('2') -FailureMessage 'x failed' } | Should -Throw 'x failed with exit code 5'
+        Invoke-ProbeTool -Log $log -Action 'c' -FilePath 'x.exe' -ArgumentList @('3')
+        @($log.action) | Should -Be @('a', 'b', 'c')
+        @($log.ok) | Should -Be @($true, $false, $false)
+    }
+
+    It 'cleans up in order (membership before the service) and verifies' {
+        Mock Get-CimInstance { [pscustomobject]@{ ProcessId = 0 } }
+        Mock Test-ProbeServiceExists { $false }
+        $dir = Join-Path $TestDrive 'probe-cleanup'
+        $null = New-Item -ItemType Directory -Path $dir
+        $rec = [ordered]@{ serviceName = 'svc'; workDir = $dir; cleanup = [System.Collections.Generic.List[object]]::new(); cleanupVerified = $false }
+        Invoke-ProbeCleanup -Record $rec -Done @{ dir = $true; service = $true; member = $true } -Group 'Hyper-V Administrators'
+        @($rec.cleanup.action) | Should -Be @('stop probe process', 'remove account from Hyper-V Administrators', 'sc.exe delete', 'remove work directory')
+        @($script:native) | Should -Be @("net.exe localgroup Hyper-V Administrators $($script:ProbeAccount) /delete", 'sc.exe delete svc', 'net.exe localgroup Hyper-V Administrators')
+        $rec.cleanupVerified | Should -BeTrue
+        Test-Path -LiteralPath $dir | Should -BeFalse
+    }
+
+    It 'only undoes what setup did' {
+        Mock Test-ProbeServiceExists { $false }
+        $dir = Join-Path $TestDrive 'probe-partial'
+        $null = New-Item -ItemType Directory -Path $dir
+        $rec = [ordered]@{ serviceName = 'svc'; workDir = $dir; cleanup = [System.Collections.Generic.List[object]]::new(); cleanupVerified = $false }
+        Invoke-ProbeCleanup -Record $rec -Done @{ dir = $true; service = $false; member = $false } -Group $null
+        @($rec.cleanup.action) | Should -Be @('remove work directory')
+        $script:native | Should -HaveCount 0
+        $rec.cleanupVerified | Should -BeTrue
+    }
+
+    It 'waits for the probe result until it is complete' {
+        Mock Start-Sleep { }
+        $path = Join-Path $TestDrive 'result.json'
+        '{"complete": false, "operations": []}' | Set-Content -LiteralPath $path
+        $rec = [ordered]@{ result = $null }
+        Wait-ProbeResult -Record $rec -Path $path -TimeoutSeconds 0
+        $rec.result['complete'] | Should -BeFalse
+        '{"complete": true, "operations": []}' | Set-Content -LiteralPath $path
+        Wait-ProbeResult -Record $rec -Path $path -TimeoutSeconds 60
+        $rec.result['complete'] | Should -BeTrue
+        Should -Invoke Start-Sleep -Times 1 -Exactly
+    }
+}
+
 Describe 'service account probe script' {
     It 'is valid PowerShell and carries the error helpers' {
         $text = New-ProbeScript
