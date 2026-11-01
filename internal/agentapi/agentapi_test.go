@@ -19,13 +19,15 @@ import (
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
 )
 
+// method is one RPC a service must expose.
+type method struct {
+	name            string
+	serverStreaming bool
+}
+
 // TestServiceDescriptors pins the service and method names that the health
 // contract, the agents and the coordinator depend on.
 func TestServiceDescriptors(t *testing.T) {
-	type method struct {
-		name            string
-		serverStreaming bool
-	}
 	tests := []struct {
 		service string
 		desc    grpc.ServiceDesc
@@ -65,28 +67,41 @@ func TestServiceDescriptors(t *testing.T) {
 			if tt.desc.ServiceName != tt.service {
 				t.Fatalf("ServiceDesc name = %q, want %q", tt.desc.ServiceName, tt.service)
 			}
-			d, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(tt.service))
-			if err != nil {
-				t.Fatalf("service not registered: %v", err)
-			}
-			sd, ok := d.(protoreflect.ServiceDescriptor)
-			if !ok {
-				t.Fatalf("%s is a %T, not a service", tt.service, d)
-			}
-			if got, want := sd.Methods().Len(), len(tt.methods); got != want {
-				t.Fatalf("%d methods, want %d", got, want)
-			}
-			for _, m := range tt.methods {
-				md := sd.Methods().ByName(protoreflect.Name(m.name))
-				if md == nil {
-					t.Fatalf("method %s missing", m.name)
-				}
-				if md.IsStreamingServer() != m.serverStreaming || md.IsStreamingClient() {
-					t.Errorf("%s: server streaming = %v, client streaming = %v; want %v, false",
-						m.name, md.IsStreamingServer(), md.IsStreamingClient(), m.serverStreaming)
-				}
-			}
+			checkMethods(t, registeredService(t, tt.service), tt.methods)
 		})
+	}
+}
+
+// registeredService looks a service up in the global protobuf registry.
+func registeredService(t *testing.T, name string) protoreflect.ServiceDescriptor {
+	t.Helper()
+	d, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(name))
+	if err != nil {
+		t.Fatalf("service not registered: %v", err)
+	}
+	sd, ok := d.(protoreflect.ServiceDescriptor)
+	if !ok {
+		t.Fatalf("%s is a %T, not a service", name, d)
+	}
+	return sd
+}
+
+// checkMethods asserts that sd has exactly the given methods, each with the
+// expected streaming shape (server streaming or unary, never client streaming).
+func checkMethods(t *testing.T, sd protoreflect.ServiceDescriptor, methods []method) {
+	t.Helper()
+	if got, want := sd.Methods().Len(), len(methods); got != want {
+		t.Fatalf("%d methods, want %d", got, want)
+	}
+	for _, m := range methods {
+		md := sd.Methods().ByName(protoreflect.Name(m.name))
+		if md == nil {
+			t.Fatalf("method %s missing", m.name)
+		}
+		if md.IsStreamingServer() != m.serverStreaming || md.IsStreamingClient() {
+			t.Errorf("%s: server streaming = %v, client streaming = %v; want %v, false",
+				m.name, md.IsStreamingServer(), md.IsStreamingClient(), m.serverStreaming)
+		}
 	}
 }
 
