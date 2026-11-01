@@ -1,0 +1,13 @@
+defaultBaseImage: gcr.io/distroless/static-debian13:nonroot
+defaultPlatforms:
+  - linux/amd64
+builds:
+  - id: hvmc
+    main: ./cmd/hvmc
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/matfax/hvmc/internal/version.Version={{.Env.VERSION}}
