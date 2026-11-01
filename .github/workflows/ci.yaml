@@ -25,8 +25,11 @@ jobs:
             go.sum
             tools/go.sum
       - name: Generated code is up to date
+        # Covers controller-gen and buf (make generate runs make proto); new
+        # untracked files count as a difference too.
         run: |
           make generate
+          git add --intent-to-add .
           git diff --exit-code
           test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
       - name: Envtest binaries
@@ -52,7 +55,20 @@ jobs:
             go.sum
             tools/go.sum
       - name: golangci-lint
-        run: make lint
+        run: make lint-go
+      - name: buf lint
+        run: make lint-proto
+      - name: buf breaking (against main)
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if ! git ls-tree -r --name-only FETCH_HEAD -- proto | grep -q '\.proto$'; then
+            echo "main has no proto files yet; skipping buf breaking"
+            exit 0
+          fi
+          against="$RUNNER_TEMP/buf-against"
+          mkdir -p "$against"
+          git archive FETCH_HEAD | tar -x -C "$against"
+          make proto-breaking BUF_AGAINST="$against"
 
   windows:
     name: windows (test)

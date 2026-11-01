@@ -1,0 +1,66 @@
+// Guest agent API (DESIGN §4.4): memory as seen inside one managed VM. Served
+// by the agent in every managed VM (Linux and Windows). See common.proto for
+// units, timestamps and the error model.
+syntax = "proto3";
+
+package hvmc.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+import "hvmc/agent/v1/common.proto";
+
+option go_package = "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1;agentv1";
+
+// GuestAgent reports the guest's view of its memory. The coordinator uses it
+// for `used` (total − available), for grow verification (guest total must
+// reflect a new assignment) and for the reconciler's free-memory signal.
+service GuestAgent {
+  // GetMemory reads the guest's memory now.
+  //
+  // Errors: UNAVAILABLE (the memory source could not be read).
+  rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse);
+
+  // WatchMemory streams the guest's memory: one reading immediately after the
+  // call, then every 5 s and additionally whenever total or available
+  // changes noticeably.
+  rpc WatchMemory(WatchMemoryRequest) returns (stream WatchMemoryResponse);
+}
+
+// GetMemoryRequest is empty.
+message GetMemoryRequest {}
+
+// GetMemoryResponse holds one reading and the agent's identity.
+message GetMemoryResponse {
+  GuestMemory memory = 1;
+  // The agent answering the call.
+  AgentInfo agent = 2;
+}
+
+// WatchMemoryRequest is empty.
+message WatchMemoryRequest {}
+
+// WatchMemoryResponse is one message of the WatchMemory stream.
+message WatchMemoryResponse {
+  GuestMemory memory = 1;
+}
+
+// GuestMemory is one reading of the guest's memory.
+//
+// Linux: total = MemTotal, available = MemAvailable from /proc/meminfo.
+// Windows: GlobalMemoryStatusEx — total = ullTotalPhys, available =
+// ullAvailPhys, commit limit = ullTotalPageFile, commit available =
+// ullAvailPageFile.
+message GuestMemory {
+  // Memory usable by the guest OS in bytes. Smaller than the VM's assigned
+  // memory by firmware and kernel reservations (the coordinator's `offset`).
+  int64 total_bytes = 1;
+  // Memory available for new allocations without swapping, in bytes.
+  int64 available_bytes = 2;
+  // Windows only: commit limit in bytes (physical memory plus page files).
+  // Unset on Linux. Equal to total_bytes when the page file is disabled.
+  optional int64 commit_limit_bytes = 3;
+  // Windows only: commit charge still available in bytes (commit limit minus
+  // committed). Unset on Linux.
+  optional int64 commit_available_bytes = 4;
+  // When the values were read.
+  google.protobuf.Timestamp observed_at = 5;
+}

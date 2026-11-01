@@ -5,6 +5,10 @@ TOOL      := $(GO) tool -modfile=$(CURDIR)/tools/go.mod
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS   := -s -w -X github.com/matfax/hvmc/internal/version.Version=$(VERSION)
 GOFLAGS_BUILD := -trimpath -ldflags "$(LDFLAGS)"
+BUF       := $(TOOL) buf
+# Input `buf breaking` compares against: a git ref or a directory holding the
+# old tree (CI passes an extracted copy of main).
+BUF_AGAINST ?= .git\#branch=main
 
 export CGO_ENABLED := 0
 
@@ -31,7 +35,9 @@ manifests: ## Generate CRDs into config/crd/bases.
 	$(TOOL) controller-gen crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: proto
-proto: ## Generate gRPC code (filled in by WP 1.4).
+proto: ## Generate gRPC code from proto/ into internal/agentapi/ (buf).
+	rm -rf internal/agentapi/hvmc
+	$(BUF) generate
 
 ##@ Verify
 
@@ -55,8 +61,19 @@ test-ledger-coverage: ## Fail when internal/ledger statement coverage is below 9
 		printf "internal/ledger coverage %s%% (minimum %s%%)\n", $$3, min }'
 
 .PHONY: lint
-lint: ## Run golangci-lint.
+lint: lint-go lint-proto ## Run all linters.
+
+.PHONY: lint-go
+lint-go: ## Run golangci-lint.
 	$(TOOL) golangci-lint run ./...
+
+.PHONY: lint-proto
+lint-proto: ## Run buf lint on proto/.
+	$(BUF) lint
+
+.PHONY: proto-breaking
+proto-breaking: ## Check proto/ for breaking changes against BUF_AGAINST.
+	$(BUF) breaking --against '$(BUF_AGAINST)'
 
 .PHONY: helm-lint
 helm-lint: ## Lint the Helm chart (from WP 2.0).

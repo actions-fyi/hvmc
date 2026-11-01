@@ -1,0 +1,221 @@
+// Host agent API (DESIGN §4.2): the only component that reads or changes
+// Hyper-V. Served by the agent on the Hyper-V host. See common.proto for
+// units, timestamps and the error model.
+syntax = "proto3";
+
+package hvmc.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+import "hvmc/agent/v1/common.proto";
+import "hvmc/agent/v1/policy.proto";
+
+option go_package = "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1;agentv1";
+
+// HostAgent reads all VMs on the Hyper-V host and resizes the VMs its local
+// policy allows. Reads cover every VM, managed or not (the coordinator's pool
+// needs them); writes are limited by the active policy (policy.proto).
+service HostAgent {
+  // GetHost returns host memory, the agent's identity and the digests of the
+  // active and pending policies.
+  //
+  // Errors: UNAVAILABLE (vmms down, worker restarting), DEADLINE_EXCEEDED.
+  rpc GetHost(GetHostRequest) returns (GetHostResponse);
+
+  // ListVMs returns every VM on the host.
+  //
+  // Errors: UNAVAILABLE, DEADLINE_EXCEEDED.
+  rpc ListVMs(ListVMsRequest) returns (ListVMsResponse);
+
+  // WatchVMs streams VM snapshots: a full snapshot immediately after the call,
+  // then a new full snapshot whenever any VM changes (the agent polls Hyper-V
+  // locally every 2 s). The stream ends with UNAVAILABLE when the agent loses
+  // Hyper-V (vmms down, worker restarting); the caller reconnects and
+  // receives a fresh full snapshot.
+  rpc WatchVMs(WatchVMsRequest) returns (stream WatchVMsResponse);
+
+  // SetStartup sets the startup memory of a running or stopped static-memory
+  // VM (`Set-VMMemory -StartupBytes`). On a running VM this grows or shrinks
+  // the assigned memory at runtime. Setting the current value succeeds
+  // without a change.
+  //
+  // Errors: INVALID_ARGUMENT (bytes not positive or not a multiple of 2 MiB),
+  // NOT_FOUND, FAILED_PRECONDITION (fixed VM, Dynamic Memory VM),
+  // PERMISSION_DENIED (VM not in the policy, value outside [min, max]),
+  // RESOURCE_EXHAUSTED (host out of memory on grow), ABORTED (guest refused
+  // shrink, possibly partial), UNAVAILABLE, DEADLINE_EXCEEDED.
+  rpc SetStartup(SetStartupRequest) returns (SetStartupResponse);
+
+  // SetDynamicLimits changes the Dynamic Memory limits of a DM VM. The
+  // maximum may only be raised and the minimum only lowered.
+  //
+  // Errors: INVALID_ARGUMENT (neither limit set, value not positive or not a
+  // multiple of 2 MiB, minimum above maximum), NOT_FOUND, FAILED_PRECONDITION
+  // (fixed VM, static VM, maximum lowered, minimum raised), PERMISSION_DENIED
+  // (VM not in the policy, minimum below the policy's min, maximum above the
+  // policy's max), UNAVAILABLE, DEADLINE_EXCEEDED.
+  rpc SetDynamicLimits(SetDynamicLimitsRequest) returns (SetDynamicLimitsResponse);
+
+  // ProposePolicy stores a proposed policy as pending next to the active
+  // policy file. It never changes the active policy; the operator activates a
+  // pending policy on the host (`hvmc agent policy sync`). A new proposal
+  // replaces an earlier pending one.
+  //
+  // Errors: INVALID_ARGUMENT (invalid policy, digest mismatch), INTERNAL
+  // (pending file could not be written).
+  rpc ProposePolicy(ProposePolicyRequest) returns (ProposePolicyResponse);
+}
+
+// GetHostRequest is empty.
+message GetHostRequest {}
+
+// GetHostResponse wraps the host observation.
+message GetHostResponse {
+  Host host = 1;
+}
+
+// Host describes the Hyper-V host and its agent.
+message Host {
+  // Computer name of the Hyper-V host.
+  string name = 1;
+  // Physical memory of the host in bytes (Win32_OperatingSystem
+  // TotalVisibleMemorySize, converted from KiB). The coordinator's default
+  // `capacity`.
+  int64 total_bytes = 2;
+  // Free physical memory of the host in bytes (Win32_OperatingSystem
+  // FreePhysicalMemory, converted from KiB). The ledger's `hostFree`.
+  int64 free_bytes = 3;
+  // The agent answering the call.
+  AgentInfo agent = 4;
+  // Digest of the active local policy (internal/policy). The coordinator
+  // compares it with the digest of the policy it derives from HostConfig to
+  // set PolicyInSync.
+  string policy_digest = 5;
+  // Digest of the pending (proposed, not yet activated) policy; empty when
+  // there is none. Lets the coordinator avoid proposing the same policy
+  // again.
+  string pending_policy_digest = 6;
+  // When total_bytes and free_bytes were read.
+  google.protobuf.Timestamp observed_at = 7;
+}
+
+// ListVMsRequest is empty: ListVMs always returns every VM.
+message ListVMsRequest {}
+
+// ListVMsResponse holds one snapshot of all VMs.
+message ListVMsResponse {
+  VMSnapshot snapshot = 1;
+}
+
+// WatchVMsRequest is empty.
+message WatchVMsRequest {}
+
+// WatchVMsResponse is one message of the WatchVMs stream.
+message WatchVMsResponse {
+  // Always a complete snapshot; the receiver replaces its previous view.
+  // VMs missing from it no longer exist on the host.
+  VMSnapshot snapshot = 1;
+}
+
+// VMSnapshot is the state of every VM on the host at one point in time.
+message VMSnapshot {
+  // Every VM on the host, managed or not, in no particular order.
+  repeated VM vms = 1;
+  // When the snapshot was read (one `Get-VM` pass).
+  google.protobuf.Timestamp observed_at = 2;
+}
+
+// VMState is the coarse Hyper-V state of a VM.
+enum VMState {
+  VM_STATE_UNSPECIFIED = 0;
+  // Any state not listed below, including Hyper-V's *Critical states; the
+  // raw value is in VM.hyperv_state.
+  VM_STATE_OTHER = 1;
+  VM_STATE_OFF = 2;
+  VM_STATE_STARTING = 3;
+  VM_STATE_RUNNING = 4;
+  VM_STATE_STOPPING = 5;
+  VM_STATE_SAVING = 6;
+  // Saved, FastSaved or Hibernated.
+  VM_STATE_SAVED = 7;
+  VM_STATE_PAUSING = 8;
+  VM_STATE_PAUSED = 9;
+  VM_STATE_RESUMING = 10;
+  VM_STATE_RESETTING = 11;
+}
+
+// VM is the memory-relevant state of one Hyper-V VM.
+message VM {
+  // Hyper-V VM name.
+  string name = 1;
+  // Hyper-V VM ID (GUID, lowercase, without braces).
+  string id = 2;
+  // Coarse state.
+  VMState state = 3;
+  // Hyper-V's state as reported by `Get-VM` (stringified enum, e.g.
+  // "Running", "RunningCritical"), for diagnostics.
+  string hyperv_state = 4;
+  // Memory currently assigned to the VM in bytes (MemoryAssigned); 0 when
+  // the VM is off. Excludes the VM worker process overhead.
+  int64 assigned_bytes = 5;
+  // Configured startup memory in bytes (MemoryStartup). For static-memory
+  // VMs this is the size the VM is resized to.
+  int64 startup_bytes = 6;
+  // Dynamic Memory configuration. Always set; `enabled` tells static from
+  // Dynamic Memory VMs.
+  DynamicMemory dynamic_memory = 7;
+  // When this VM's values were read.
+  google.protobuf.Timestamp observed_at = 8;
+}
+
+// DynamicMemory is a VM's Hyper-V Dynamic Memory configuration.
+message DynamicMemory {
+  // True if Dynamic Memory is enabled. When false, the other fields are 0.
+  bool enabled = 1;
+  // MinimumBytes.
+  int64 minimum_bytes = 2;
+  // MaximumBytes.
+  int64 maximum_bytes = 3;
+  // Memory buffer in percent (Hyper-V `Buffer`, 5–2000).
+  int32 buffer_percent = 4;
+  // Memory weight (Hyper-V `Priority`, 0–100).
+  int32 priority = 5;
+}
+
+// SetStartupRequest resizes a static-memory VM.
+message SetStartupRequest {
+  // Hyper-V VM name.
+  string vm_name = 1;
+  // New startup memory in bytes; positive and a multiple of 2 MiB.
+  int64 startup_bytes = 2;
+}
+
+// SetStartupResponse reports the outcome of SetStartup.
+message SetStartupResponse {
+  ResizeResult result = 1;
+}
+
+// SetDynamicLimitsRequest changes the limits of a Dynamic Memory VM. Unset
+// fields are left unchanged; at least one must be set.
+message SetDynamicLimitsRequest {
+  // Hyper-V VM name.
+  string vm_name = 1;
+  // New DM minimum in bytes; must not be above the current minimum.
+  optional int64 minimum_bytes = 2;
+  // New DM maximum in bytes; must not be below the current maximum.
+  optional int64 maximum_bytes = 3;
+}
+
+// SetDynamicLimitsResponse reports the outcome of SetDynamicLimits.
+message SetDynamicLimitsResponse {
+  ResizeResult result = 1;
+}
+
+// ResizeResult reports a VM as read immediately before and after a write.
+// `before` and `after` each carry their own observed_at; assigned and startup
+// in `after` are re-read from Hyper-V, never copied from the request.
+message ResizeResult {
+  // The VM before the write.
+  VM before = 1;
+  // The VM after the write.
+  VM after = 2;
+}
