@@ -62,9 +62,9 @@ wait_until() {
 
 # pod_json <name> <resources-json> [spec-merge-json] [annotations-json]
 pod_json() {
-  local spec=${3:-'{}'} ann=${4:-'{}'}
-  jq -n --arg name "$1" --arg ns "$TNS" --arg image "$PAUSE_IMAGE" \
-    --argjson res "$2" --argjson spec "$spec" --argjson ann "$ann" '
+  local name=$1 res=$2 spec=${3:-'{}'} ann=${4:-'{}'}
+  jq -n --arg name "$name" --arg ns "$TNS" --arg image "$PAUSE_IMAGE" \
+    --argjson res "$res" --argjson spec "$spec" --argjson ann "$ann" '
     {apiVersion: "v1", kind: "Pod",
      metadata: ({name: $name, namespace: $ns, labels: {spike: "s2"}}
                 + (if $ann == {} then {} else {annotations: $ann} end)),
@@ -80,8 +80,8 @@ wh_log() { kubectl -n "$NS" logs deploy/stub-webhook --tail=-1 2>/dev/null | jq 
 wh_count() { wh_log | wc -l | tr -d ' '; }
 # intervals: successive differences of a number column, comma separated.
 intervals() { awk 'NR>1 {printf "%s%d", (NR>2 ? "," : ""), $1-prev} {prev=$1}'; }
-scheduled_by() { kubectl -n "$TNS" get events --field-selector "involvedObject.name=$1,reason=Scheduled" -o json | jq -r '.items[0] | (.reportingComponent // .source.component // "none")'; }
-pod_ready() { [[ $(kubectl -n "$TNS" get pod "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null) == True ]]; }
+scheduled_by() { local pod=$1; kubectl -n "$TNS" get events --field-selector "involvedObject.name=$pod,reason=Scheduled" -o json | jq -r '.items[0] | (.reportingComponent // .source.component // "none")'; }
+pod_ready() { local pod=$1; [[ $(kubectl -n "$TNS" get pod "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null) == True ]]; }
 
 # ---------------------------------------------------------------- setup
 
@@ -313,12 +313,12 @@ check4() {
 # (mono_ms), never from wall clocks of different processes.
 
 # filter_mono <pod> [jq-condition]: mono_ms of the pod's filter calls.
-filter_mono() { ext_log | jq -r --arg p "$TNS/$1" "select(.msg==\"filter\" and .pod==\$p ${2:+and $2}) | .mono_ms"; }
+filter_mono() { local pod=$1 cond=${2:-}; ext_log | jq -r --arg p "$TNS/$pod" "select(.msg==\"filter\" and .pod==\$p ${cond:+and $cond}) | .mono_ms"; }
 # stats: "n=<count> min/p50/max=<a>/<b>/<c> ms" of a number column.
 stats() { sort -n | awk '{v[NR]=$1} END {if (NR == 0) {print "n=0"; exit} printf "n=%d min/p50/max=%d/%d/%d ms", NR, v[1], v[int((NR+1)/2)], v[NR]}'; }
 # pod_updates_seen <pod>: pod updates the scheduler received while it was unscheduled.
-pod_updates_seen() { scheduler_logs | grep -c "Update event for unscheduled pod\" pod=\"$TNS/$1\""; }
-create_ram_pod() { pod_json "$1" "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' "$2" | kubectl create -f - >/dev/null; }
+pod_updates_seen() { local pod=$1; scheduler_logs | grep -c "Update event for unscheduled pod\" pod=\"$TNS/$pod\""; }
+create_ram_pod() { local pod=$1 ann=$2; pod_json "$pod" "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' "$ann" | kubectl create -f - >/dev/null; }
 
 check5a() {
   section "check 5a: extender rejects only the first filter call; no intervention"
@@ -431,7 +431,7 @@ check6() {
   ip[a]=$(kubectl -n "$TNS" get pod leader-a -o jsonpath='{.status.podIP}')
   ip[b]=$(kubectl -n "$TNS" get pod leader-b -o jsonpath='{.status.podIP}')
   kubectl -n "$TNS" label pod leader-a hvmc.fax.fyi/leader=true >/dev/null
-  slice_is() { [[ $(slice_ips) == "$1" ]]; }
+  slice_is() { local want=$1; [[ $(slice_ips) == "$want" ]]; }
   wait_until 30 slice_is "${ip[a]}" ||
     { record ERROR 6 "EndpointSlice never showed leader-a"; return; }
   local cur=a nxt t0 t1 t2 follow=() total=() i deadline

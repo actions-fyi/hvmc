@@ -140,41 +140,47 @@ func qstr(l corev1.ResourceList, name corev1.ResourceName) string {
 // Pods without a hvmc.fax.fyi/ram limit get no patch (the CEL
 // matchCondition should keep them away from the webhook entirely).
 func (m *mutator) mutate(pod *corev1.Pod) ([]patchOp, string) {
-	var ops []patchOp
-	for _, set := range []struct {
-		path       string
-		containers []corev1.Container
-	}{{"/spec/initContainers", pod.Spec.InitContainers}, {"/spec/containers", pod.Spec.Containers}} {
-		for i := range set.containers {
-			c := &set.containers[i]
-			ram, ok := c.Resources.Limits[resourceRAM]
-			if !ok {
-				continue
-			}
-			res := c.Resources.DeepCopy()
-			if res.Requests == nil {
-				res.Requests = corev1.ResourceList{}
-			}
-			res.Requests[corev1.ResourceMemory] = m.memoryRequest.DeepCopy()
-			if _, ok := res.Limits[corev1.ResourceMemory]; !ok {
-				res.Limits[corev1.ResourceMemory] = ram.DeepCopy()
-			}
-			ops = append(ops, patchOp{Op: "add", Path: set.path + "/" + strconv.Itoa(i) + "/resources", Value: res})
-		}
-	}
+	ops := m.resourceOps("/spec/initContainers", pod.Spec.InitContainers)
+	ops = append(ops, m.resourceOps("/spec/containers", pod.Spec.Containers)...)
 	if len(ops) == 0 {
 		return nil, ""
 	}
 	if sn := pod.Spec.SchedulerName; sn != "" && sn != defaultSchedulerName && sn != m.schedulerName {
 		return nil, "hvmc: pod requests " + string(resourceRAM) + " but names scheduler " + sn
 	}
-	ops = append(ops, patchOp{Op: "add", Path: "/spec/schedulerName", Value: m.schedulerName})
-	if len(pod.Annotations) == 0 {
-		ops = append(ops, patchOp{Op: "add", Path: "/metadata/annotations", Value: map[string]string{annManaged: "true"}})
-	} else {
-		ops = append(ops, patchOp{Op: "add", Path: "/metadata/annotations/" + jsonPointerEscaper.Replace(annManaged), Value: "true"})
-	}
+	ops = append(ops, patchOp{Op: "add", Path: "/spec/schedulerName", Value: m.schedulerName}, managedAnnotationOp(pod))
 	return ops, ""
+}
+
+// resourceOps returns one patch per container that carries a
+// hvmc.fax.fyi/ram limit: requests.memory normalized, limits.memory filled
+// from the RAM limit when unset. Other containers are left alone.
+func (m *mutator) resourceOps(path string, containers []corev1.Container) []patchOp {
+	var ops []patchOp
+	for i := range containers {
+		ram, ok := containers[i].Resources.Limits[resourceRAM]
+		if !ok {
+			continue
+		}
+		res := containers[i].Resources.DeepCopy()
+		if res.Requests == nil {
+			res.Requests = corev1.ResourceList{}
+		}
+		res.Requests[corev1.ResourceMemory] = m.memoryRequest.DeepCopy()
+		if _, ok := res.Limits[corev1.ResourceMemory]; !ok {
+			res.Limits[corev1.ResourceMemory] = ram.DeepCopy()
+		}
+		ops = append(ops, patchOp{Op: "add", Path: path + "/" + strconv.Itoa(i) + "/resources", Value: res})
+	}
+	return ops
+}
+
+// managedAnnotationOp marks the pod as handled by hvmc.
+func managedAnnotationOp(pod *corev1.Pod) patchOp {
+	if len(pod.Annotations) == 0 {
+		return patchOp{Op: "add", Path: "/metadata/annotations", Value: map[string]string{annManaged: "true"}}
+	}
+	return patchOp{Op: "add", Path: "/metadata/annotations/" + jsonPointerEscaper.Replace(annManaged), Value: "true"}
 }
 
 // jsonPointerEscaper applies RFC 6901 escaping to one path segment.

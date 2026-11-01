@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -57,17 +58,8 @@ func TestMutate(t *testing.T) {
 			if (deny != "") != tt.wantDeny {
 				t.Fatalf("deny = %q, want deny %v", deny, tt.wantDeny)
 			}
-			var paths []string
-			for _, op := range ops {
-				paths = append(paths, op.Path)
-			}
-			if len(paths) != len(tt.wantPaths) {
-				t.Fatalf("paths = %v, want %v", paths, tt.wantPaths)
-			}
-			for i := range paths {
-				if paths[i] != tt.wantPaths[i] {
-					t.Fatalf("paths = %v, want %v", paths, tt.wantPaths)
-				}
+			if diff := cmp.Diff(tt.wantPaths, opPaths(ops)); diff != "" {
+				t.Fatalf("patch paths (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -100,4 +92,12 @@ func TestMutateResources(t *testing.T) {
 	if _, ok := pod.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory]; ok {
 		t.Error("mutate modified the input pod")
 	}
+}
+
+func opPaths(ops []patchOp) []string {
+	var paths []string
+	for _, op := range ops {
+		paths = append(paths, op.Path)
+	}
+	return paths
 }

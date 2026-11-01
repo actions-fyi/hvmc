@@ -9,6 +9,7 @@ metadata:
   labels: {app: leader-spike}
 spec:
   terminationGracePeriodSeconds: 0
+  automountServiceAccountToken: false
   containers:
     - name: c
       image: ${PAUSE_IMAGE}
@@ -16,6 +17,7 @@ spec:
         requests:
           cpu: 10m
           memory: 32Mi
+          ephemeral-storage: 16Mi
         limits:
           memory: 128Mi
       ports:
@@ -29,6 +31,7 @@ metadata:
   labels: {app: leader-spike}
 spec:
   terminationGracePeriodSeconds: 0
+  automountServiceAccountToken: false
   containers:
     - name: c
       image: ${PAUSE_IMAGE}
@@ -36,6 +39,7 @@ spec:
         requests:
           cpu: 10m
           memory: 32Mi
+          ephemeral-storage: 16Mi
         limits:
           memory: 128Mi
       ports:
