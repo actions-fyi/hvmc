@@ -7,4 +7,19 @@ layout:
 - go.kubebuilder.io/v4
 projectName: hvmc
 repo: github.com/matfax/hvmc
+resources:
+- api:
+    crdVersion: v1
+  domain: fax.fyi
+  group: hvmc
+  kind: HostConfig
+  path: github.com/matfax/hvmc/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+  domain: fax.fyi
+  group: hvmc
+  kind: MemoryLease
+  path: github.com/matfax/hvmc/api/v1alpha1
+  version: v1alpha1
 version: "3"

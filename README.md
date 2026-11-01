@@ -18,6 +18,7 @@ Requires Go (the toolchain is downloaded automatically from `go.mod`) and GNU ma
 
 ```sh
 make help       # list targets
-make test lint  # what CI runs
+make test lint  # what CI runs; test downloads envtest binaries into .envtest/
+make generate   # deepcopy and CRDs (config/crd/bases) from api/v1alpha1
 make build      # bin/hvmc
 ```
