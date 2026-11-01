@@ -1,0 +1,55 @@
+# Test scenario for internal/fake: one Hyper-V host with a fixed Linux node,
+# a static Windows VM, a Dynamic Memory VM, an unmanaged VM and a VM that is
+# off. Free memory: 64Gi - 4Gi - (8 + 8 + 6 + 4 + 0)Gi = 34Gi.
+host:
+  name: hyperv-1
+  total: 64Gi
+  overhead: 4Gi
+  certificate:
+    dnsNames: [hyperv-1.example.invalid]
+    ipAddresses: [192.0.2.10]
+policy:
+  vms:
+    - name: linux-node-1
+      fixed: true
+    - name: vm-a
+      min: 4Gi
+      max: 16Gi
+    - name: vm-dm
+      min: 2Gi
+      max: 24Gi
+    - name: vm-off
+      min: 2Gi
+      max: 8Gi
+vms:
+  - name: linux-node-1
+    startup: 8Gi
+  - name: vm-a
+    startup: 8Gi
+  - name: vm-dm
+    startup: 4Gi
+    assigned: 6Gi
+    dynamicMemory:
+      minimum: 4Gi
+      maximum: 12Gi
+      buffer: 20
+      priority: 50
+  - name: vm-unmanaged
+    id: 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+    startup: 4Gi
+  - name: vm-off
+    state: Off
+    startup: 4Gi
+guests:
+  - name: linux-node-1
+    vm: linux-node-1
+    offset: 200Mi
+    used: 2Gi
+  - name: vm-a
+    vm: vm-a
+    os: windows
+    offset: 256Mi
+    used: 3Gi
+    pageFile: 2Gi
+    certificate:
+      commonName: vm-a.example.invalid
