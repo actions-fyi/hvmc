@@ -4,6 +4,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       kubernetes:
         patterns:
@@ -13,6 +15,8 @@ updates:
     directory: /tools
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       tools:
         patterns:
@@ -21,3 +25,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
