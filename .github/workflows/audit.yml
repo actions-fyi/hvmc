@@ -29,7 +29,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run zizmor 🌈
-        uses: step-security/zizmor-action@0d7097f162a7f6dd65730d10bbcd17f070cf87e2 # v0.6.4
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
           persona: pedantic
           min-severity: low
