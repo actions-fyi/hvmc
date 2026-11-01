@@ -960,6 +960,120 @@ function Get-HyperVAdministratorsGroupName {
     $account.Split('\')[-1]
 }
 
+function Invoke-ProbeTool {
+    # Runs one native command of the probe's setup or cleanup and logs it. With
+    # -FailureMessage a non-zero exit code throws (setup stops at the first failure).
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $Log,
+        [Parameter(Mandatory)] [string] $Action,
+        [Parameter(Mandatory)] [string] $FilePath,
+        [Parameter(Mandatory)] [string[]] $ArgumentList,
+        [string] $FailureMessage
+    )
+    $r = Invoke-NativeTool -FilePath $FilePath -ArgumentList $ArgumentList
+    $Log.Add([ordered]@{ action = $Action; ok = ($r.exitCode -eq 0); detail = $r.output })
+    if ($FailureMessage -and $r.exitCode -ne 0) { throw "$FailureMessage with exit code $($r.exitCode)" }
+}
+
+function Write-ProbeFile {
+    # Writes probe.ps1 and input.json into the (already created) work directory; returns the probe path.
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $VMName,
+        [Parameter(Mandatory)] [long] $StepBytes
+    )
+    $probePath = Join-Path $Path 'probe.ps1'
+    Set-Content -LiteralPath $probePath -Value (New-ProbeScript) -Encoding utf8
+    ConvertTo-Json -InputObject ([ordered]@{ vmName = $VMName; stepBytes = $StepBytes }) | Set-Content -LiteralPath (Join-Path $Path 'input.json') -Encoding utf8
+    $probePath
+}
+
+function New-ProbeService {
+    param([Parameter(Mandatory)] [string] $ServiceName, [Parameter(Mandatory)] [string] $ProbePath)
+    # Same process shape as the host agent's worker: pwsh -NoLogo -NoProfile -NonInteractive.
+    $pwsh = (Get-Process -Id $PID).Path
+    $binPath = '"{0}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{1}"' -f $pwsh, $ProbePath
+    $null = New-Service -Name $ServiceName -BinaryPathName $binPath -DisplayName 'hvmc S1 probe (temporary)' -Description 'Temporary service created by hack/hyperv-characterize.ps1; safe to delete.' -StartupType Manual
+}
+
+function Wait-ProbeResult {
+    # Polls the result file the probe writes incrementally; $Record.result holds the last
+    # readable copy. Returns once the probe marks it complete or the timeout passes.
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Record,
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [int] $TimeoutSeconds
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path -LiteralPath $Path) {
+            try {
+                $parsed = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+                $Record.result = $parsed
+                if ($parsed['complete']) { return }
+            } catch {
+                Write-Verbose "probe result not readable yet: $_"
+            }
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+}
+
+function Stop-ProbeProcess {
+    param([Parameter(Mandatory)] [string] $ServiceName, [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $Log)
+    try {
+        $cim = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'"
+        if ($null -ne $cim -and [int]$cim.ProcessId -gt 0) { Stop-Process -Id ([int]$cim.ProcessId) -Force }
+        $Log.Add([ordered]@{ action = 'stop probe process'; ok = $true; detail = $null })
+    } catch {
+        $Log.Add([ordered]@{ action = 'stop probe process'; ok = $false; detail = $_.Exception.Message })
+    }
+}
+
+function Remove-ProbeWorkDir {
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $Log)
+    try {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+        $Log.Add([ordered]@{ action = 'remove work directory'; ok = $true; detail = $null })
+    } catch {
+        $Log.Add([ordered]@{ action = 'remove work directory'; ok = $false; detail = $_.Exception.Message })
+    }
+}
+
+function Test-ProbeCleanup {
+    # True when the service, the work directory and the group membership are all gone.
+    param(
+        [Parameter(Mandatory)] [string] $ServiceName,
+        [Parameter(Mandatory)] [string] $Path,
+        [AllowNull()] $Group
+    )
+    $memberLeft = $false
+    if ($null -ne $Group) {
+        $members = Invoke-NativeTool -FilePath 'net.exe' -ArgumentList @('localgroup', $Group)
+        $memberLeft = $members.output -match [regex]::Escape($ServiceName)
+    }
+    (-not (Test-ProbeServiceExists)) -and (-not (Test-Path -LiteralPath $Path)) -and (-not $memberLeft)
+}
+
+function Invoke-ProbeCleanup {
+    # Undoes exactly what setup did ($Done), membership before the service, then verifies.
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Record,
+        [Parameter(Mandatory)] [hashtable] $Done,
+        [AllowNull()] $Group
+    )
+    $svc = $Record.serviceName
+    if ($Done.service) { Stop-ProbeProcess -ServiceName $svc -Log $Record.cleanup }
+    if ($Done.member -and $null -ne $Group) {
+        Invoke-ProbeTool -Log $Record.cleanup -Action 'remove account from Hyper-V Administrators' -FilePath 'net.exe' -ArgumentList @('localgroup', $Group, $script:ProbeAccount, '/delete')
+    }
+    if ($Done.service) {
+        Invoke-ProbeTool -Log $Record.cleanup -Action 'sc.exe delete' -FilePath 'sc.exe' -ArgumentList @('delete', $svc)
+    }
+    if ($Done.dir) { Remove-ProbeWorkDir -Path $Record.workDir -Log $Record.cleanup }
+    $Record.cleanupVerified = Test-ProbeCleanup -ServiceName $svc -Path $Record.workDir -Group $Group
+}
+
 function Invoke-ServiceAccountProbe {
     param(
         [Parameter(Mandatory)] [string] $VMName,
@@ -979,83 +1093,26 @@ function Invoke-ServiceAccountProbe {
         $group = Get-HyperVAdministratorsGroupName
         $null = New-Item -ItemType Directory -Path $dir
         $did.dir = $true
-        $probePath = Join-Path $dir 'probe.ps1'
-        Set-Content -LiteralPath $probePath -Value (New-ProbeScript) -Encoding utf8
-        ConvertTo-Json -InputObject ([ordered]@{ vmName = $VMName; stepBytes = $StepBytes }) | Set-Content -LiteralPath (Join-Path $dir 'input.json') -Encoding utf8
+        $probePath = Write-ProbeFile -Path $dir -VMName $VMName -StepBytes $StepBytes
         $rec.setup.Add([ordered]@{ action = 'create work directory and probe script'; ok = $true; detail = $null })
 
-        # Same process shape as the host agent's worker: pwsh -NoLogo -NoProfile -NonInteractive.
-        $pwsh = (Get-Process -Id $PID).Path
-        $binPath = '"{0}" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{1}"' -f $pwsh, $probePath
-        $null = New-Service -Name $svc -BinaryPathName $binPath -DisplayName 'hvmc S1 probe (temporary)' -Description 'Temporary service created by hack/hyperv-characterize.ps1; safe to delete.' -StartupType Manual
+        New-ProbeService -ServiceName $svc -ProbePath $probePath
         $did.service = $true
         $rec.setup.Add([ordered]@{ action = 'New-Service'; ok = $true; detail = $null })
 
-        $r = Invoke-NativeTool -FilePath 'sc.exe' -ArgumentList @('config', $svc, 'obj=', $script:ProbeAccount)
-        $rec.setup.Add([ordered]@{ action = 'sc.exe config obj= (virtual account)'; ok = ($r.exitCode -eq 0); detail = $r.output })
-        if ($r.exitCode -ne 0) { throw "sc.exe config failed with exit code $($r.exitCode)" }
-
-        $r = Invoke-NativeTool -FilePath 'icacls.exe' -ArgumentList @($dir, '/grant', "$($script:ProbeAccount):(OI)(CI)M")
-        $rec.setup.Add([ordered]@{ action = 'icacls grant Modify on work directory'; ok = ($r.exitCode -eq 0); detail = $r.output })
-        if ($r.exitCode -ne 0) { throw "icacls failed with exit code $($r.exitCode)" }
-
-        $r = Invoke-NativeTool -FilePath 'net.exe' -ArgumentList @('localgroup', $group, $script:ProbeAccount, '/add')
-        $rec.setup.Add([ordered]@{ action = 'add account to Hyper-V Administrators'; ok = ($r.exitCode -eq 0); detail = $r.output })
-        if ($r.exitCode -ne 0) { throw "net localgroup /add failed with exit code $($r.exitCode)" }
+        Invoke-ProbeTool -Log $rec.setup -Action 'sc.exe config obj= (virtual account)' -FilePath 'sc.exe' -ArgumentList @('config', $svc, 'obj=', $script:ProbeAccount) -FailureMessage 'sc.exe config failed'
+        Invoke-ProbeTool -Log $rec.setup -Action 'icacls grant Modify on work directory' -FilePath 'icacls.exe' -ArgumentList @($dir, '/grant', "$($script:ProbeAccount):(OI)(CI)M") -FailureMessage 'icacls failed'
+        Invoke-ProbeTool -Log $rec.setup -Action 'add account to Hyper-V Administrators' -FilePath 'net.exe' -ArgumentList @('localgroup', $group, $script:ProbeAccount, '/add') -FailureMessage 'net localgroup /add failed'
         $did.member = $true
 
         # pwsh is not a service binary: SCM reports a start timeout (1053) or an early exit
         # (1067) after the probe finished. The probe writes its result incrementally.
         $rec.serviceStart = Invoke-NativeTool -FilePath 'sc.exe' -ArgumentList @('start', $svc)
-
-        $resultPath = Join-Path $dir 'result.json'
-        $deadline = [DateTime]::UtcNow.AddSeconds($ResultTimeoutSeconds)
-        do {
-            if (Test-Path -LiteralPath $resultPath) {
-                try {
-                    $parsed = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -AsHashtable
-                    $rec.result = $parsed
-                    if ($parsed['complete']) { break }
-                } catch {
-                    Write-Verbose "probe result not readable yet: $_"
-                }
-            }
-            Start-Sleep -Milliseconds 500
-        } while ([DateTime]::UtcNow -lt $deadline)
+        Wait-ProbeResult -Record $rec -Path (Join-Path $dir 'result.json') -TimeoutSeconds $ResultTimeoutSeconds
     } catch {
         $rec.error = ConvertTo-ErrorInfo -ErrorRecord $_
     } finally {
-        if ($did.service) {
-            try {
-                $cim = Get-CimInstance -ClassName Win32_Service -Filter "Name='$svc'"
-                if ($null -ne $cim -and [int]$cim.ProcessId -gt 0) { Stop-Process -Id ([int]$cim.ProcessId) -Force }
-                $rec.cleanup.Add([ordered]@{ action = 'stop probe process'; ok = $true; detail = $null })
-            } catch {
-                $rec.cleanup.Add([ordered]@{ action = 'stop probe process'; ok = $false; detail = $_.Exception.Message })
-            }
-        }
-        if ($did.member -and $null -ne $group) {
-            $r = Invoke-NativeTool -FilePath 'net.exe' -ArgumentList @('localgroup', $group, $script:ProbeAccount, '/delete')
-            $rec.cleanup.Add([ordered]@{ action = 'remove account from Hyper-V Administrators'; ok = ($r.exitCode -eq 0); detail = $r.output })
-        }
-        if ($did.service) {
-            $r = Invoke-NativeTool -FilePath 'sc.exe' -ArgumentList @('delete', $svc)
-            $rec.cleanup.Add([ordered]@{ action = 'sc.exe delete'; ok = ($r.exitCode -eq 0); detail = $r.output })
-        }
-        if ($did.dir) {
-            try {
-                Remove-Item -LiteralPath $dir -Recurse -Force
-                $rec.cleanup.Add([ordered]@{ action = 'remove work directory'; ok = $true; detail = $null })
-            } catch {
-                $rec.cleanup.Add([ordered]@{ action = 'remove work directory'; ok = $false; detail = $_.Exception.Message })
-            }
-        }
-        $memberLeft = $false
-        if ($null -ne $group) {
-            $members = Invoke-NativeTool -FilePath 'net.exe' -ArgumentList @('localgroup', $group)
-            $memberLeft = $members.output -match [regex]::Escape($svc)
-        }
-        $rec.cleanupVerified = (-not (Test-ProbeServiceExists)) -and (-not (Test-Path -LiteralPath $dir)) -and (-not $memberLeft)
+        Invoke-ProbeCleanup -Record $rec -Done $did -Group $group
     }
     $rec
 }
@@ -1085,7 +1142,44 @@ function Write-ResultFile {
     [ordered]@{ path = $path; leaks = $leaks }
 }
 
-function Write-Summary {
+function ConvertTo-SummaryRow {
+    # One row of the console summary table for a step record.
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Step)
+    $assigned = 'n/a'
+    if ($null -ne $Step.before -and $null -ne $Step.settled) {
+        $assigned = '{0} -> {1}' -f ([long]$Step.before.assignedBytes / 1MB), ([long]$Step.settled.assignedBytes / 1MB)
+    }
+    $startup = 'n/a'
+    if ($null -ne $Step.settled) { $startup = [long]$Step.settled.startupBytes / 1MB }
+    $errorId = ''
+    if (@($Step.errors).Count -gt 0) { $errorId = $Step.errors[0].fullyQualifiedErrorId }
+    $target = ''
+    if ($null -ne $Step.targetBytes) { $target = [long]$Step.targetBytes / 1MB }
+    $ok = 'NO'
+    if ($Step.matchesExpectation) { $ok = 'yes' }
+    [pscustomobject]@{
+        Step          = $Step.name
+        'Target MiB'  = $target
+        Expected      = $Step.expected
+        Observed      = $Step.observed
+        OK            = $ok
+        'Assigned MiB' = $assigned
+        'Startup MiB' = $startup
+        Diverged      = $Step.startupDiverged
+        ms            = $Step.durationMs
+        'Error id'    = $errorId
+    }
+}
+
+function Show-ProbeSummary {
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Probe)
+    Write-Host ("  service account probe ({0}): cleanup verified: {1}" -f $Probe.account, $Probe.cleanupVerified)
+    if ($null -eq $Probe.result -or -not $Probe.result.Contains('operations')) { return }
+    foreach ($op in $Probe.result['operations']) { Write-Host ("    {0}: {1}" -f $op['name'], $op['result']) }
+}
+
+function Show-Summary {
+    # Human-readable console summary of a finished run; the JSON file is the record.
     param(
         [Parameter(Mandatory)] [System.Collections.IDictionary] $Document,
         [AllowNull()] [string] $Path
@@ -1093,49 +1187,213 @@ function Write-Summary {
     Write-Host ''
     Write-Host ("S1 Hyper-V characterization: {0} (exit code {1})" -f $Document.run.outcome, $Document.run.exitCode)
     if ($null -ne $Document.run.abortReason) { Write-Host "  abort reason: $($Document.run.abortReason)" }
-    $rows = foreach ($s in $Document.steps) {
-        $assigned = 'n/a'
-        if ($null -ne $s.before -and $null -ne $s.settled) {
-            $assigned = '{0} -> {1}' -f ([long]$s.before.assignedBytes / 1MB), ([long]$s.settled.assignedBytes / 1MB)
-        }
-        $startup = 'n/a'
-        if ($null -ne $s.settled) { $startup = [long]$s.settled.startupBytes / 1MB }
-        $errorId = ''
-        if (@($s.errors).Count -gt 0) { $errorId = $s.errors[0].fullyQualifiedErrorId }
-        $target = ''
-        if ($null -ne $s.targetBytes) { $target = [long]$s.targetBytes / 1MB }
-        [pscustomobject]@{
-            Step          = $s.name
-            'Target MiB'  = $target
-            Expected      = $s.expected
-            Observed      = $s.observed
-            OK            = $(if ($s.matchesExpectation) { 'yes' } else { 'NO' })
-            'Assigned MiB' = $assigned
-            'Startup MiB' = $startup
-            Diverged      = $s.startupDiverged
-            ms            = $s.durationMs
-            'Error id'    = $errorId
-        }
-    }
+    $rows = foreach ($s in $Document.steps) { ConvertTo-SummaryRow -Step $s }
     if (@($rows).Count -gt 0) { Write-Host (@($rows) | Format-Table -AutoSize | Out-String -Width 220).TrimEnd() }
     $restore = $Document.restore
     if ($null -ne $restore) {
         Write-Host ("  restore: original MemoryStartup {0}, final MemoryStartup {1}, final MemoryAssigned {2}, restored: {3}" -f (Format-MiB $restore.originalStartupBytes), (Format-MiB $restore.finalStartupBytes), (Format-MiB $restore.finalAssignedBytes), $restore.restored)
     }
-    $probe = $Document.serviceAccountProbe
-    if ($null -ne $probe) {
-        Write-Host ("  service account probe ({0}): cleanup verified: {1}" -f $probe.account, $probe.cleanupVerified)
-        if ($null -ne $probe.result -and $probe.result.Contains('operations')) {
-            foreach ($op in $probe.result['operations']) { Write-Host ("    {0}: {1}" -f $op['name'], $op['result']) }
-        }
-    }
+    if ($null -ne $Document.serviceAccountProbe) { Show-ProbeSummary -Probe $Document.serviceAccountProbe }
     if ($Path) { Write-Host "  result: $Path" }
     Write-Host '  Review the JSON before committing it as a fixture (docs/spikes/s1-hyperv.md).'
+}
+
+function Show-SafetyCheck {
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Checks)
+    Write-Host 'Safety checks:'
+    foreach ($c in $Checks) {
+        $mark = 'FAIL'
+        if ($c.passed) { $mark = 'ok' }
+        Write-Host ('  [{0}] {1}: {2}' -f $mark, $c.name, $c.detail)
+    }
+}
+
+function Show-Plan {
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Plan)
+    Write-Host ('Plan: baseline {0}; grow to {1} and {2}; shrink to {0}; refused shrink to {3}; up to {4} midpoint retries; restore to {0}.' -f (Format-MiB $Plan.baselineBytes), (Format-MiB $Plan.growStepTargetBytes), (Format-MiB $Plan.growLargeTargetBytes), (Format-MiB $Plan.refuseTargetBytes), $Plan.partialShrinkMaxAttempts)
+}
+
+function Show-Status {
+    # One console status line; never part of the script's output stream.
+    param([Parameter(Mandatory)] [string] $Message)
+    Write-Host $Message
 }
 
 # ---------------------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------------------
+
+function Get-RunExitCode {
+    # 0 completed, 1 aborted or interrupted, 3 MemoryStartup not restored (wins over 1).
+    param([Parameter(Mandatory)] [string] $Outcome, [bool] $Restored)
+    if (-not $Restored) { return 3 }
+    if ($Outcome -ne 'completed') { return 1 }
+    0
+}
+
+function New-ResultDocument {
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Facts,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object] $Checks,
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Plan,
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Parameters,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $Steps
+    )
+    [ordered]@{
+        schemaVersion       = $script:SchemaVersion
+        kind                = $script:DocumentKind
+        script              = [ordered]@{ path = 'hack/hyperv-characterize.ps1'; version = $script:ScriptVersion }
+        run                 = [ordered]@{ startedAt = (Get-UtcTimestamp); finishedAt = $null; outcome = 'running'; abortReason = $null; exitCode = $null }
+        anonymization       = [ordered]@{ vmName = $script:VmNamePlaceholder; vmId = $script:VmIdPlaceholder; hostName = $script:HostPlaceholder; leakCheck = $null }
+        parameters          = $Parameters
+        invoker             = [ordered]@{ isAdministrator = [bool](Test-IsElevated); tokenHasHyperVAdministrators = [bool](Test-TokenHasHyperVAdministrators) }
+        host                = [ordered]@{
+            osCaption = "$($Facts.os.Caption)"; osVersion = "$($Facts.os.Version)"; osBuildNumber = "$($Facts.os.BuildNumber)"
+            psVersion = $PSVersionTable.PSVersion.ToString(); hyperVModuleVersion = $Facts.hyperV.moduleVersion
+            totalVisibleMemoryBytes = $Facts.hostTotalBytes; freePhysicalMemoryBytes = $Facts.hostFreeBytes
+        }
+        safety              = $Checks
+        plan                = $Plan
+        baseline            = $null
+        steps               = $Steps
+        serviceAccountProbe = $null
+        restore             = $null
+    }
+}
+
+function Get-Baseline {
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Facts, [Parameter(Mandatory)] [guid] $VMId)
+    [ordered]@{
+        vm              = Get-ObjectShape -InputObject $Facts.vm -Property $script:VMShapeProperties
+        vmMemory        = Get-ObjectShape -InputObject $Facts.memory -Property $script:VMMemoryShapeProperties
+        operatingSystem = Get-ObjectShape -InputObject $Facts.os -Property $script:OSShapeProperties
+        state           = Get-VMMemoryState -VMId $VMId
+        guest           = $null
+    }
+}
+
+function Initialize-GuestCheck {
+    # Opens the guest session and measures the guest/host offset into $Baseline.guest.
+    # Returns the guest context for the resize steps, or $null when the check is disabled.
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Baseline,
+        [Parameter(Mandatory)] [guid] $VMId,
+        [AllowNull()] [pscredential] $Credential,
+        [Parameter(Mandatory)] [int] $TimeoutSeconds
+    )
+    $guestRecord = [ordered]@{ totalBytes = $null; offsetBytes = $null; error = $null }
+    $Baseline.guest = $guestRecord
+    try {
+        $session = New-GuestSession -VMId $VMId -Credential $Credential
+        $total = Get-GuestTotalBytes -Session $session
+        $guestRecord.totalBytes = $total
+        $guestRecord.offsetBytes = $Baseline.state.assignedBytes - $total
+        return [ordered]@{ session = $session; offsetBytes = $guestRecord.offsetBytes; timeoutSeconds = $TimeoutSeconds }
+    } catch {
+        $guestRecord.error = ConvertTo-ErrorInfo -ErrorRecord $_
+        Write-Warning "guest check disabled: $($_.Exception.Message)"
+    }
+    $null
+}
+
+function Invoke-RunStep {
+    # Re-checks safety, then runs one resize step and appends it to $Run.steps.
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Run,
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [long] $TargetBytes,
+        [Parameter(Mandatory)] [string] $Expected,
+        [switch] $Restore
+    )
+    Assert-SafeToWrite -VMName $Run.vmName -VMId $Run.vmId -TargetBytes $TargetBytes -MarginBytes $Run.marginBytes -Restore:$Restore
+    $step = Invoke-ResizeStep -Index ($Run.index++) -Name $Name -VMName $Run.vmName -VMId $Run.vmId -TargetBytes $TargetBytes -Expected $Expected -SettleSeconds $Run.settleSeconds -StepBytes $Run.stepBytes -Guest $Run.guest
+    $Run.steps.Add($step)
+    $step
+}
+
+function Invoke-PartialShrink {
+    # After a refused shrink, retries at midpoints between the refused target and the
+    # current assignment until one succeeds or nothing lies in between.
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Run, [Parameter(Mandatory)] [long] $RefusedTargetBytes)
+    $refused = $RefusedTargetBytes
+    for ($attempt = 1; $attempt -le $script:PartialShrinkMaxAttempts; $attempt++) {
+        if ($Run.steps[$Run.steps.Count - 1].result -eq 'succeeded') { return }
+        $current = (Get-VMMemoryState -VMId $Run.vmId).assignedBytes
+        $mid = Get-MidpointTarget -RefusedTargetBytes $refused -CurrentAssignedBytes $current -StepBytes $Run.stepBytes
+        if ($null -eq $mid) { return }
+        $null = Invoke-RunStep -Run $Run -Name "shrink-partial-$attempt" -TargetBytes $mid -Expected 'any'
+        $refused = $mid
+    }
+}
+
+function Invoke-ResizeSequence {
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Run, [Parameter(Mandatory)] [System.Collections.IDictionary] $Plan)
+    $Run.steps.Add((Invoke-ReadErrorStep -Index ($Run.index++)))
+    $sequence = @(
+        @{ name = 'set-unaligned'; target = $Plan.unalignedTargetBytes; expected = 'refusal' }
+        @{ name = 'grow-step'; target = $Plan.growStepTargetBytes; expected = 'success' }
+        @{ name = 'grow-large'; target = $Plan.growLargeTargetBytes; expected = 'success' }
+        @{ name = 'shrink-to-baseline'; target = $Plan.baselineBytes; expected = 'success' }
+        @{ name = 'shrink-refused'; target = $Plan.refuseTargetBytes; expected = 'refusal' }
+    )
+    foreach ($s in $sequence) {
+        $null = Invoke-RunStep -Run $Run -Name $s.name -TargetBytes $s.target -Expected $s.expected
+    }
+    Invoke-PartialShrink -Run $Run -RefusedTargetBytes $Plan.refuseTargetBytes
+}
+
+function Invoke-RestoreStep {
+    # Up to two attempts to put MemoryStartup back to $OriginalBytes.
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Run, [Parameter(Mandatory)] [long] $OriginalBytes)
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $r = Invoke-RunStep -Run $Run -Name "restore-$attempt" -TargetBytes $OriginalBytes -Expected 'success' -Restore
+        if ($r.settled.startupBytes -eq $OriginalBytes) { return }
+        if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
+    }
+}
+
+function Restore-MemoryStartup {
+    # Restores MemoryStartup if anything changed and returns the restore record.
+    param([Parameter(Mandatory)] [System.Collections.IDictionary] $Run, [Parameter(Mandatory)] [long] $OriginalBytes)
+    $restore = [ordered]@{ originalStartupBytes = $OriginalBytes; needed = $null; restored = $false; finalStartupBytes = $null; finalAssignedBytes = $null; error = $null }
+    try {
+        $now = Get-VMMemoryState -VMId $Run.vmId
+        $restore.needed = ($now.startupBytes -ne $OriginalBytes) -or ($now.assignedBytes -ne $OriginalBytes)
+        if ($restore.needed) { Invoke-RestoreStep -Run $Run -OriginalBytes $OriginalBytes }
+        $final = Get-VMMemoryState -VMId $Run.vmId
+        $restore.finalStartupBytes = $final.startupBytes
+        $restore.finalAssignedBytes = $final.assignedBytes
+        $restore.restored = ($final.startupBytes -eq $OriginalBytes)
+    } catch {
+        $restore.error = ConvertTo-ErrorInfo -ErrorRecord $_
+    }
+    $restore
+}
+
+function Close-GuestCheck {
+    param([AllowNull()] [System.Collections.IDictionary] $Guest)
+    if ($null -eq $Guest) { return }
+    try { Remove-GuestSession -Session $Guest.session } catch { Write-Verbose "guest session cleanup: $_" }
+}
+
+function Save-RunResult {
+    # Writes the anonymised result file; returns its path, or $null when it could not be written.
+    param(
+        [Parameter(Mandatory)] [System.Collections.IDictionary] $Document,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Rules,
+        [Parameter(Mandatory)] [string] $OutDir
+    )
+    try {
+        $written = Write-ResultFile -Document $Document -Rules $Rules -OutDir $OutDir
+    } catch {
+        Write-Warning "could not write the result file: $($_.Exception.Message)"
+        return $null
+    }
+    if ($written.leaks.Count -gt 0) {
+        Write-Warning ("anonymisation check failed for: {0}. Do not commit this file without editing it." -f ($written.leaks -join ', '))
+    }
+    $written.path
+}
 
 function Invoke-Characterization {
     param(
@@ -1162,15 +1420,14 @@ function Invoke-Characterization {
     }
     $checks = Test-Safety -Facts $facts -Plan $plan -MarginBytes $marginBytes -GuestCheck:$GuestCheck -HasGuestCredential:($null -ne $GuestCredential) -ServiceAccountProbe:$ServiceAccountProbe
 
-    Write-Host 'Safety checks:'
-    foreach ($c in $checks) { Write-Host ('  [{0}] {1}: {2}' -f $(if ($c.passed) { 'ok' } else { 'FAIL' }), $c.name, $c.detail) }
+    Show-SafetyCheck -Checks $checks
     if (@($checks | Where-Object { -not $_.passed }).Count -gt 0) {
-        Write-Host 'Refused: nothing was changed.'
+        Show-Status 'Refused: nothing was changed.'
         return 2
     }
-    Write-Host ('Plan: baseline {0}; grow to {1} and {2}; shrink to {0}; refused shrink to {3}; up to {4} midpoint retries; restore to {0}.' -f (Format-MiB $plan.baselineBytes), (Format-MiB $plan.growStepTargetBytes), (Format-MiB $plan.growLargeTargetBytes), (Format-MiB $plan.refuseTargetBytes), $plan.partialShrinkMaxAttempts)
+    Show-Plan -Plan $plan
     if ($DryRun) {
-        Write-Host 'Dry run: nothing was changed.'
+        Show-Status 'Dry run: nothing was changed.'
         return 0
     }
 
@@ -1178,81 +1435,24 @@ function Invoke-Characterization {
     $original = [long]$facts.vm.MemoryStartup
     $rules = New-RedactionRuleSet -VMName $VMName -VMId $vmId -HostNames (Get-HostNameList)
     $steps = [System.Collections.Generic.List[object]]::new()
-    $doc = [ordered]@{
-        schemaVersion       = $script:SchemaVersion
-        kind                = $script:DocumentKind
-        script              = [ordered]@{ path = 'hack/hyperv-characterize.ps1'; version = $script:ScriptVersion }
-        run                 = [ordered]@{ startedAt = (Get-UtcTimestamp); finishedAt = $null; outcome = 'running'; abortReason = $null; exitCode = $null }
-        anonymization       = [ordered]@{ vmName = $script:VmNamePlaceholder; vmId = $script:VmIdPlaceholder; hostName = $script:HostPlaceholder; leakCheck = $null }
-        parameters          = [ordered]@{
-            stepBytes = $stepBytes; largeStepBytes = [long]$LargeStepMiB * 1MB; refuseTargetBytes = [long]$RefuseTargetMiB * 1MB
-            hostMarginBytes = $marginBytes; settleSeconds = $SettleSeconds; guestCheck = [bool]$GuestCheck
-            guestTimeoutSeconds = $GuestTimeoutSeconds; serviceAccountProbe = [bool]$ServiceAccountProbe
-        }
-        invoker             = [ordered]@{ isAdministrator = [bool](Test-IsElevated); tokenHasHyperVAdministrators = [bool](Test-TokenHasHyperVAdministrators) }
-        host                = [ordered]@{
-            osCaption = "$($facts.os.Caption)"; osVersion = "$($facts.os.Version)"; osBuildNumber = "$($facts.os.BuildNumber)"
-            psVersion = $PSVersionTable.PSVersion.ToString(); hyperVModuleVersion = $facts.hyperV.moduleVersion
-            totalVisibleMemoryBytes = $facts.hostTotalBytes; freePhysicalMemoryBytes = $facts.hostFreeBytes
-        }
-        safety              = $checks
-        plan                = $plan
-        baseline            = $null
-        steps               = $steps
-        serviceAccountProbe = $null
-        restore             = $null
+    $parameters = [ordered]@{
+        stepBytes = $stepBytes; largeStepBytes = [long]$LargeStepMiB * 1MB; refuseTargetBytes = [long]$RefuseTargetMiB * 1MB
+        hostMarginBytes = $marginBytes; settleSeconds = $SettleSeconds; guestCheck = [bool]$GuestCheck
+        guestTimeoutSeconds = $GuestTimeoutSeconds; serviceAccountProbe = [bool]$ServiceAccountProbe
+    }
+    $doc = New-ResultDocument -Facts $facts -Checks $checks -Plan $plan -Parameters $parameters -Steps $steps
+    # Shared by every step, the restore included: target VM, limits, guest session, step index.
+    $run = [ordered]@{
+        vmName = $VMName; vmId = $vmId; marginBytes = $marginBytes; settleSeconds = $SettleSeconds
+        stepBytes = $stepBytes; guest = $null; steps = $steps; index = 0
     }
 
-    $guest = $null
-    $index = 0
     try {
-        $doc.baseline = [ordered]@{
-            vm              = Get-ObjectShape -InputObject $facts.vm -Property $script:VMShapeProperties
-            vmMemory        = Get-ObjectShape -InputObject $facts.memory -Property $script:VMMemoryShapeProperties
-            operatingSystem = Get-ObjectShape -InputObject $facts.os -Property $script:OSShapeProperties
-            state           = Get-VMMemoryState -VMId $vmId
-            guest           = $null
-        }
+        $doc.baseline = Get-Baseline -Facts $facts -VMId $vmId
         if ($GuestCheck) {
-            $guestRecord = [ordered]@{ totalBytes = $null; offsetBytes = $null; error = $null }
-            try {
-                $session = New-GuestSession -VMId $vmId -Credential $GuestCredential
-                $total = Get-GuestTotalBytes -Session $session
-                $guestRecord.totalBytes = $total
-                $guestRecord.offsetBytes = $doc.baseline.state.assignedBytes - $total
-                $guest = [ordered]@{ session = $session; offsetBytes = $guestRecord.offsetBytes; timeoutSeconds = $GuestTimeoutSeconds }
-            } catch {
-                $guestRecord.error = ConvertTo-ErrorInfo -ErrorRecord $_
-                Write-Warning "guest check disabled: $($_.Exception.Message)"
-            }
-            $doc.baseline.guest = $guestRecord
+            $run.guest = Initialize-GuestCheck -Baseline $doc.baseline -VMId $vmId -Credential $GuestCredential -TimeoutSeconds $GuestTimeoutSeconds
         }
-
-        $steps.Add((Invoke-ReadErrorStep -Index ($index++)))
-
-        $sequence = @(
-            @{ name = 'set-unaligned'; target = $plan.unalignedTargetBytes; expected = 'refusal' }
-            @{ name = 'grow-step'; target = $plan.growStepTargetBytes; expected = 'success' }
-            @{ name = 'grow-large'; target = $plan.growLargeTargetBytes; expected = 'success' }
-            @{ name = 'shrink-to-baseline'; target = $plan.baselineBytes; expected = 'success' }
-            @{ name = 'shrink-refused'; target = $plan.refuseTargetBytes; expected = 'refusal' }
-        )
-        foreach ($s in $sequence) {
-            Assert-SafeToWrite -VMName $VMName -VMId $vmId -TargetBytes $s.target -MarginBytes $marginBytes
-            $steps.Add((Invoke-ResizeStep -Index ($index++) -Name $s.name -VMName $VMName -VMId $vmId -TargetBytes $s.target -Expected $s.expected -SettleSeconds $SettleSeconds -StepBytes $stepBytes -Guest $guest))
-        }
-
-        $refused = $plan.refuseTargetBytes
-        for ($attempt = 1; $attempt -le $script:PartialShrinkMaxAttempts; $attempt++) {
-            if ($steps[$steps.Count - 1].result -eq 'succeeded') { break }
-            $current = (Get-VMMemoryState -VMId $vmId).assignedBytes
-            $mid = Get-MidpointTarget -RefusedTargetBytes $refused -CurrentAssignedBytes $current -StepBytes $stepBytes
-            if ($null -eq $mid) { break }
-            Assert-SafeToWrite -VMName $VMName -VMId $vmId -TargetBytes $mid -MarginBytes $marginBytes
-            $steps.Add((Invoke-ResizeStep -Index ($index++) -Name "shrink-partial-$attempt" -VMName $VMName -VMId $vmId -TargetBytes $mid -Expected 'any' -SettleSeconds $SettleSeconds -StepBytes $stepBytes -Guest $guest))
-            $refused = $mid
-        }
-
+        Invoke-ResizeSequence -Run $run -Plan $plan
         if ($ServiceAccountProbe) {
             $current = Get-VMMemoryState -VMId $vmId
             Assert-SafeToWrite -VMName $VMName -VMId $vmId -TargetBytes ($current.startupBytes + $stepBytes) -MarginBytes $marginBytes
@@ -1265,50 +1465,15 @@ function Invoke-Characterization {
         Write-Warning "sequence aborted: $($_.Exception.Message)"
     } finally {
         # Always put MemoryStartup back, whatever happened above (also on Ctrl+C).
-        $restore = [ordered]@{ originalStartupBytes = $original; needed = $null; restored = $false; finalStartupBytes = $null; finalAssignedBytes = $null; error = $null }
-        try {
-            $now = Get-VMMemoryState -VMId $vmId
-            $restore.needed = ($now.startupBytes -ne $original) -or ($now.assignedBytes -ne $original)
-            if ($restore.needed) {
-                for ($attempt = 1; $attempt -le 2; $attempt++) {
-                    Assert-SafeToWrite -VMName $VMName -VMId $vmId -TargetBytes $original -MarginBytes $marginBytes -Restore
-                    $r = Invoke-ResizeStep -Index ($index++) -Name "restore-$attempt" -VMName $VMName -VMId $vmId -TargetBytes $original -Expected 'success' -SettleSeconds $SettleSeconds -StepBytes $stepBytes -Guest $guest
-                    $steps.Add($r)
-                    if ($r.settled.startupBytes -eq $original) { break }
-                    if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
-                }
-            }
-            $final = Get-VMMemoryState -VMId $vmId
-            $restore.finalStartupBytes = $final.startupBytes
-            $restore.finalAssignedBytes = $final.assignedBytes
-            $restore.restored = ($final.startupBytes -eq $original)
-        } catch {
-            $restore.error = ConvertTo-ErrorInfo -ErrorRecord $_
-        }
-        $doc.restore = $restore
-        if ($null -ne $guest) {
-            try { Remove-GuestSession -Session $guest.session } catch { Write-Verbose "guest session cleanup: $_" }
-        }
+        $doc.restore = Restore-MemoryStartup -Run $run -OriginalBytes $original
+        Close-GuestCheck -Guest $run.guest
         if ($doc.run.outcome -eq 'running') { $doc.run.outcome = 'interrupted' }
         $doc.run.finishedAt = Get-UtcTimestamp
-        $exitCode = 0
-        if ($doc.run.outcome -ne 'completed') { $exitCode = 1 }
-        if (-not $restore.restored) { $exitCode = 3 }
+        $exitCode = Get-RunExitCode -Outcome $doc.run.outcome -Restored $doc.restore.restored
         $doc.run.exitCode = $exitCode
-
-        $written = $null
-        try {
-            $written = Write-ResultFile -Document $doc -Rules $rules -OutDir $OutDir
-            if ($written.leaks.Count -gt 0) {
-                Write-Warning ("anonymisation check failed for: {0}. Do not commit this file without editing it." -f ($written.leaks -join ', '))
-            }
-        } catch {
-            Write-Warning "could not write the result file: $($_.Exception.Message)"
-        }
-        $path = $null
-        if ($null -ne $written) { $path = $written.path }
-        Write-Summary -Document $doc -Path $path
-        if (-not $restore.restored) {
+        $path = Save-RunResult -Document $doc -Rules $rules -OutDir $OutDir
+        Show-Summary -Document $doc -Path $path
+        if (-not $doc.restore.restored) {
             Write-Warning ("MemoryStartup was NOT restored to {0}. Restore it manually: Set-VMMemory -VMName <name> -StartupBytes {1}" -f (Format-MiB $original), $original)
         }
     }
