@@ -190,7 +190,7 @@ deploy_stubs() {
 # ------------------------------------------------- scheduler + RBAC finding
 
 scheduler_logs() { kubectl -n "$NS" logs deploy/hvmc-scheduler --tail=-1 2>/dev/null; }
-lease_acquired() { scheduler_logs | grep -q 'successfully acquired lease'; }
+lease_acquired() { scheduler_logs | grep -qi 'successfully acquired lease'; }
 
 check_scheduler_rbac() {
   section "check 4 (pre): hvmc-scheduler with exactly the DESIGN §7.2 RBAC"
@@ -201,7 +201,7 @@ check_scheduler_rbac() {
   if wait_until 45 lease_acquired; then
     record PASS 4-rbac "leader lease acquired $(($(now_ms) - t0)) ms after rollout with the DESIGN §7.2 bindings alone"
   else
-    forbidden=$(scheduler_logs | grep -m1 -o 'leases.coordination.k8s.io "hvmc-scheduler" is forbidden.*' | cut -c1-260)
+    forbidden=$(scheduler_logs | grep -m1 -i 'forbidden' | cut -c1-300)
     record FAIL 4-rbac "no leader lease within 45 s with the DESIGN §7.2 bindings alone: ${forbidden:-no forbidden error logged}; adding Role hvmc-scheduler-leader-election (leases create; get/update on resourceName hvmc-scheduler)"
     kubectl apply -f "$HERE/manifests/scheduler-lease-rbac.yaml" >/dev/null || die "apply lease RBAC"
     kubectl -n "$NS" rollout restart deploy/hvmc-scheduler >/dev/null
@@ -210,7 +210,7 @@ check_scheduler_rbac() {
     log "lease acquired after adding the lease Role"
   fi
   sleep 10
-  forbidden=$(scheduler_logs | grep -o 'is forbidden: User "[^"]*" cannot [a-z]* resource "[^"]*"[^"]*"[^"]*"' | sort | uniq -c | sort -rn)
+  forbidden=$(scheduler_logs | grep -i 'forbidden' | grep -oE 'cannot [a-z]+ resource [^ ]+( in API group [^ ]+)?( in the namespace [^ ]+)?' | sort | uniq -c | sort -rn)
   echo "forbidden errors in the running scheduler's log (after leader election):"
   echo "${forbidden:-  none}"
 }
@@ -425,7 +425,7 @@ finish() {
     echo "--- webhook calls"
     wh_log | jq -c 'del(.time, .level, .containersIn)'
     echo "--- hvmc-scheduler log (filtered)"
-    scheduler_logs | grep -E 'r-once|r-always|r-patch|c3-ram|c4-noram|forbidden|acquired|xtender|backoff|Unable to schedule' | cut -c1-400 | tail -400
+    scheduler_logs | grep -iE 'r-once|r-always|r-patch|c3-ram|c4-noram|forbidden|acquired|xtender|backoff|unable to schedule' | cut -c1-400 | tail -400
     echo "--- hvmc-scheduler log tail"
     scheduler_logs | tail -40 | cut -c1-400
     echo "--- events in $TNS"
