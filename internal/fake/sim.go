@@ -223,36 +223,50 @@ func (s *Sim) reconcileGuestsLocked() {
 			continue
 		}
 		live[g.Name] = true
-		target := max(*v.Assigned-g.Offset, 0)
-		last, seen := s.targets[g.Name]
-		s.targets[g.Name] = target
-		if !seen || last == target {
-			continue
-		}
-		name := g.Name
-		if l := s.lags[name]; l != nil {
-			l.timer.Stop()
-			delete(s.lags, name)
-		}
-		if target <= g.Total || g.TotalLag <= 0 {
-			g.Total = target
-			continue
-		}
-		l := &guestLag{target: target}
-		l.timer = s.clock.AfterFunc(g.TotalLag.D(), func() {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if s.lags[name] != l {
-				return
-			}
-			delete(s.lags, name)
-			if g := s.sc.guest(name); g != nil {
-				g.Total = l.target
-				s.changedLocked()
-			}
-		})
-		s.lags[name] = l
+		s.followAssignmentLocked(g, max(*v.Assigned-g.Offset, 0))
 	}
+	s.forgetGuestsLocked(live)
+}
+
+// followAssignmentLocked moves a linked guest's total towards target when
+// target changed since the last reconcile.
+func (s *Sim) followAssignmentLocked(g *GuestSpec, target Bytes) {
+	last, seen := s.targets[g.Name]
+	s.targets[g.Name] = target
+	if !seen || last == target {
+		return
+	}
+	if l := s.lags[g.Name]; l != nil {
+		l.timer.Stop()
+		delete(s.lags, g.Name)
+	}
+	if target <= g.Total || g.TotalLag <= 0 {
+		g.Total = target
+		return
+	}
+	s.lags[g.Name] = s.lagLocked(g.Name, target, g.TotalLag.D())
+}
+
+// lagLocked schedules a guest's total to become target after d.
+func (s *Sim) lagLocked(name string, target Bytes, d time.Duration) *guestLag {
+	l := &guestLag{target: target}
+	l.timer = s.clock.AfterFunc(d, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.lags[name] != l {
+			return
+		}
+		delete(s.lags, name)
+		if g := s.sc.guest(name); g != nil {
+			g.Total = l.target
+			s.changedLocked()
+		}
+	})
+	return l
+}
+
+// forgetGuestsLocked drops lag and target state of guests no longer linked.
+func (s *Sim) forgetGuestsLocked(live map[string]bool) {
 	for name, l := range s.lags {
 		if !live[name] {
 			l.timer.Stop()

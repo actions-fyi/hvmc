@@ -269,51 +269,59 @@ func TestGrowOutlivesCmdletTimeout(t *testing.T) {
 }
 
 func TestShrinkRefusedPartialAndDrift(t *testing.T) {
+	t.Run("refused", testShrinkRefused)
+	t.Run("partial then midpoint retry", testShrinkPartial)
+	t.Run("startup drift and repair", testShrinkDrift)
+}
+
+func testShrinkRefused(t *testing.T) {
 	ctx := testCtx(t)
-	t.Run("refused", func(t *testing.T) {
-		e := newEnv(t, func(sc *fake.Scenario) { sc.VMs[1].ShrinkFloor = ptr(8 * fake.GiB) })
-		_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
-		wantCode(t, err, codes.Aborted)
-		r := resizeDetails(t, err)
-		if r.GetAfter().GetAssignedBytes() != 8*gib || r.GetAfter().GetStartupBytes() != 8*gib {
-			t.Errorf("after = %v", r.GetAfter())
-		}
-		if got := e.vm(ctx, "vm-a"); got.GetAssignedBytes() != 8*gib || got.GetStartupBytes() != 8*gib {
-			t.Errorf("VM = %v", got)
-		}
+	e := newEnv(t, func(sc *fake.Scenario) { sc.VMs[1].ShrinkFloor = ptr(8 * fake.GiB) })
+	_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
+	wantCode(t, err, codes.Aborted)
+	r := resizeDetails(t, err)
+	if r.GetAfter().GetAssignedBytes() != 8*gib || r.GetAfter().GetStartupBytes() != 8*gib {
+		t.Errorf("after = %v", r.GetAfter())
+	}
+	if got := e.vm(ctx, "vm-a"); got.GetAssignedBytes() != 8*gib || got.GetStartupBytes() != 8*gib {
+		t.Errorf("VM = %v", got)
+	}
+}
+
+func testShrinkPartial(t *testing.T) {
+	ctx := testCtx(t)
+	e := newEnv(t, func(sc *fake.Scenario) { sc.VMs[1].ShrinkFloor = ptr(6 * fake.GiB) })
+	_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 4 * gib})
+	wantCode(t, err, codes.Aborted)
+	if got := e.vm(ctx, "vm-a"); got.GetAssignedBytes() != 6*gib || got.GetStartupBytes() != 6*gib {
+		t.Errorf("after partial shrink VM = %v", got)
+	}
+	if got := e.free(ctx); got != 36*gib {
+		t.Errorf("free after partial shrink = %d GiB, want 36", got/gib)
+	}
+	// Retrying at a value the guest accepts succeeds.
+	_, err = e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
+	e.must(err)
+}
+
+func testShrinkDrift(t *testing.T) {
+	ctx := testCtx(t)
+	e := newEnv(t, func(sc *fake.Scenario) {
+		sc.VMs[1].ShrinkFloor = ptr(8 * fake.GiB)
+		sc.VMs[1].StartupDrift = true
 	})
-	t.Run("partial then midpoint retry", func(t *testing.T) {
-		e := newEnv(t, func(sc *fake.Scenario) { sc.VMs[1].ShrinkFloor = ptr(6 * fake.GiB) })
-		_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 4 * gib})
-		wantCode(t, err, codes.Aborted)
-		if got := e.vm(ctx, "vm-a"); got.GetAssignedBytes() != 6*gib || got.GetStartupBytes() != 6*gib {
-			t.Errorf("after partial shrink VM = %v", got)
-		}
-		if got := e.free(ctx); got != 36*gib {
-			t.Errorf("free after partial shrink = %d GiB, want 36", got/gib)
-		}
-		// Retrying at a value the guest accepts succeeds.
-		_, err = e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
-		e.must(err)
-	})
-	t.Run("startup drift and repair", func(t *testing.T) {
-		e := newEnv(t, func(sc *fake.Scenario) {
-			sc.VMs[1].ShrinkFloor = ptr(8 * fake.GiB)
-			sc.VMs[1].StartupDrift = true
-		})
-		_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
-		wantCode(t, err, codes.Aborted)
-		got := e.vm(ctx, "vm-a")
-		if got.GetAssignedBytes() != 8*gib || got.GetStartupBytes() != 6*gib {
-			t.Fatalf("after refused shrink VM = %v, want assigned 8Gi, startup drifted to 6Gi", got)
-		}
-		// DESIGN §3.5: restore MemoryStartup to the assigned value.
-		resp, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 8 * gib})
-		e.must(err)
-		if a := resp.GetResult().GetAfter(); a.GetAssignedBytes() != 8*gib || a.GetStartupBytes() != 8*gib {
-			t.Errorf("after repair = %v", a)
-		}
-	})
+	_, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 6 * gib})
+	wantCode(t, err, codes.Aborted)
+	got := e.vm(ctx, "vm-a")
+	if got.GetAssignedBytes() != 8*gib || got.GetStartupBytes() != 6*gib {
+		t.Fatalf("after refused shrink VM = %v, want assigned 8Gi, startup drifted to 6Gi", got)
+	}
+	// DESIGN §3.5: restore MemoryStartup to the assigned value.
+	resp, err := e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: 8 * gib})
+	e.must(err)
+	if a := resp.GetResult().GetAfter(); a.GetAssignedBytes() != 8*gib || a.GetStartupBytes() != 8*gib {
+		t.Errorf("after repair = %v", a)
+	}
 }
 
 func TestVMMSDown(t *testing.T) {

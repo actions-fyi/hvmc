@@ -300,34 +300,44 @@ func (sc *Scenario) setDefaults() {
 		sc.Host.CmdletTimeout = defaultCmdletTimeout
 	}
 	for i := range sc.VMs {
-		v := &sc.VMs[i]
-		if v.State == "" {
-			v.State = "Running"
-		}
-		if v.ID == "" {
-			v.ID = vmID(v.Name)
-		}
-		if v.DynamicMemory != nil && v.DynamicMemory.Buffer == 0 {
-			v.DynamicMemory.Buffer = 20
-		}
-		if v.Assigned == nil {
-			a := v.Startup
-			if !holdsMemory(v.State) {
-				a = 0
-			}
-			v.Assigned = &a
-		}
+		sc.VMs[i].setDefaults()
 	}
 	for i := range sc.Guests {
-		g := &sc.Guests[i]
-		if g.OS == "" {
-			g.OS = OSLinux
-		}
-		if g.VM != "" && g.Total == 0 {
-			if v := sc.vm(g.VM); v != nil {
-				g.Total = max(*v.Assigned-g.Offset, 0)
-			}
-		}
+		sc.setGuestDefaults(&sc.Guests[i])
+	}
+}
+
+func (v *VMSpec) setDefaults() {
+	if v.State == "" {
+		v.State = "Running"
+	}
+	if v.ID == "" {
+		v.ID = vmID(v.Name)
+	}
+	if v.DynamicMemory != nil && v.DynamicMemory.Buffer == 0 {
+		v.DynamicMemory.Buffer = 20
+	}
+	if v.Assigned != nil {
+		return
+	}
+	a := v.Startup
+	if !holdsMemory(v.State) {
+		a = 0
+	}
+	v.Assigned = &a
+}
+
+// setGuestDefaults defaults a guest; a linked guest's total starts at its
+// VM's assignment minus the offset. Call after the VMs are defaulted.
+func (sc *Scenario) setGuestDefaults(g *GuestSpec) {
+	if g.OS == "" {
+		g.OS = OSLinux
+	}
+	if g.VM == "" || g.Total != 0 {
+		return
+	}
+	if v := sc.vm(g.VM); v != nil {
+		g.Total = max(*v.Assigned-g.Offset, 0)
 	}
 }
 
@@ -362,133 +372,116 @@ var (
 	guestMethods = []string{"GetMemory", "WatchMemory", "RotateCertificate", "InstallCertificate"}
 )
 
+// problems collects validation errors.
+type problems struct{ errs []error }
+
+// check records an error when bad is true.
+func (p *problems) check(bad bool, format string, args ...any) {
+	if bad {
+		p.errs = append(p.errs, fmt.Errorf(format, args...))
+	}
+}
+
+func (p *problems) add(errs ...error) { p.errs = append(p.errs, errs...) }
+
 // Validate checks a defaulted scenario for consistency.
 func (sc *Scenario) Validate() error {
-	var errs []error
-	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	var p problems
+	sc.validateHost(&p)
+	sc.validatePolicies(&p)
+	sc.validateVMs(&p)
+	sc.validateGuests(&p)
+	return errors.Join(p.errs...)
+}
 
+func (sc *Scenario) validateHost(p *problems) {
 	h := sc.Host
-	if h.Name == "" {
-		add("host.name is required")
-	}
-	if h.Total <= 0 {
-		add("host.total must be positive")
-	}
-	if h.Overhead < 0 || h.GrowLatency < 0 || h.CmdletTimeout < 0 {
-		add("host: overhead, growLatency and cmdletTimeout must not be negative")
-	}
-	errs = append(errs, h.validate("host", hostMethods)...)
-	for _, p := range []struct {
+	p.check(h.Name == "", "host.name is required")
+	p.check(h.Total <= 0, "host.total must be positive")
+	p.check(h.Overhead < 0 || h.GrowLatency < 0 || h.CmdletTimeout < 0,
+		"host: overhead, growLatency and cmdletTimeout must not be negative")
+	p.add(h.validate("host", hostMethods)...)
+}
+
+func (sc *Scenario) validatePolicies(p *problems) {
+	for _, pol := range []struct {
 		field string
 		p     *PolicySpec
 	}{{"policy", sc.Policy}, {"pendingPolicy", sc.PendingPolicy}} {
-		if p.p != nil {
-			if err := validatePolicy(toProtoPolicy(p.p)); err != nil {
-				add("%s: %w", p.field, err)
-			}
+		if pol.p == nil {
+			continue
+		}
+		if err := validatePolicy(toProtoPolicy(pol.p)); err != nil {
+			p.check(true, "%s: %w", pol.field, err)
 		}
 	}
+}
 
+func (sc *Scenario) validateVMs(p *problems) {
 	var sumAssigned Bytes
 	names := map[string]bool{}
 	for _, v := range sc.VMs {
-		errs = append(errs, v.validate()...)
-		if names[v.Name] {
-			add("vm %q: duplicate name", v.Name)
-		}
+		p.add(v.validate()...)
+		p.check(names[v.Name], "vm %q: duplicate name", v.Name)
 		names[v.Name] = true
 		if v.Assigned != nil {
 			sumAssigned += *v.Assigned
 		}
 	}
-	if h.Total > 0 && sumAssigned+h.Overhead > h.Total {
-		add("host: overhead %s plus assigned memory %s exceed total %s", h.Overhead, sumAssigned, h.Total)
-	}
+	h := sc.Host
+	p.check(h.Total > 0 && sumAssigned+h.Overhead > h.Total,
+		"host: overhead %s plus assigned memory %s exceed total %s", h.Overhead, sumAssigned, h.Total)
+}
 
-	agents := map[string]bool{h.Name: true}
+func (sc *Scenario) validateGuests(p *problems) {
+	agents := map[string]bool{sc.Host.Name: true}
 	for _, g := range sc.Guests {
 		where := fmt.Sprintf("guest %q", g.Name)
-		if g.Name == "" {
-			add("guest name is required")
-		}
-		if agents[g.Name] {
-			add("%s: duplicate agent name", where)
-		}
+		p.check(g.Name == "", "guest name is required")
+		p.check(agents[g.Name], "%s: duplicate agent name", where)
 		agents[g.Name] = true
-		if g.VM != "" && sc.vm(g.VM) == nil {
-			add("%s: vm %q does not exist", where, g.VM)
-		}
-		if g.OS != OSLinux && g.OS != OSWindows {
-			add("%s: os must be %q or %q", where, OSLinux, OSWindows)
-		}
-		if g.Total < 0 || g.Offset < 0 || g.Used < 0 || g.PageFile < 0 || g.Committed < 0 || g.TotalLag < 0 {
-			add("%s: quantities and durations must not be negative", where)
-		}
-		errs = append(errs, g.validate(where, guestMethods)...)
+		p.check(g.VM != "" && sc.vm(g.VM) == nil, "%s: vm %q does not exist", where, g.VM)
+		p.check(g.OS != OSLinux && g.OS != OSWindows, "%s: os must be %q or %q", where, OSLinux, OSWindows)
+		p.check(g.Total < 0 || g.Offset < 0 || g.Used < 0 || g.PageFile < 0 || g.Committed < 0 || g.TotalLag < 0,
+			"%s: quantities and durations must not be negative", where)
+		p.add(g.validate(where, guestMethods)...)
 	}
-	return errors.Join(errs...)
 }
 
 func (a AgentBehaviour) validate(where string, methods []string) []error {
-	var errs []error
+	var p problems
 	for _, m := range a.Hang {
-		if m != "*" && !slices.Contains(methods, m) {
-			errs = append(errs, fmt.Errorf("%s: hang: unknown method %q (want one of %s or *)", where, m, strings.Join(methods, ", ")))
-		}
+		p.check(m != "*" && !slices.Contains(methods, m),
+			"%s: hang: unknown method %q (want one of %s or *)", where, m, strings.Join(methods, ", "))
 	}
-	if a.Stale != nil && a.Stale.Age < 0 {
-		errs = append(errs, fmt.Errorf("%s: stale.age must not be negative", where))
-	}
+	p.check(a.Stale != nil && a.Stale.Age < 0, "%s: stale.age must not be negative", where)
 	if c := a.Certificate; c != nil {
 		for _, ip := range c.IPAddresses {
-			if net.ParseIP(ip) == nil {
-				errs = append(errs, fmt.Errorf("%s: certificate: invalid IP address %q", where, ip))
-			}
+			p.check(net.ParseIP(ip) == nil, "%s: certificate: invalid IP address %q", where, ip)
 		}
-		if c.FailRotate < 0 || c.FailInstall < 0 {
-			errs = append(errs, fmt.Errorf("%s: certificate: failure counts must not be negative", where))
-		}
+		p.check(c.FailRotate < 0 || c.FailInstall < 0, "%s: certificate: failure counts must not be negative", where)
 	}
-	return errs
+	return p.errs
 }
 
 func (v VMSpec) validate() []error {
-	var errs []error
+	var p problems
 	where := fmt.Sprintf("vm %q", v.Name)
-	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(where+": "+format, args...)) }
-	if v.Name == "" {
-		add("name is required")
-	}
-	if !knownState(v.State) {
-		add("unknown state %q", v.State)
-	}
-	if v.Startup <= 0 || v.Startup%alignment != 0 {
-		add("startup must be positive and a multiple of 2Mi")
-	}
+	check := func(bad bool, format string, args ...any) { p.check(bad, where+": "+format, args...) }
+	check(v.Name == "", "name is required")
+	check(!knownState(v.State), "unknown state %q", v.State)
+	check(v.Startup <= 0 || v.Startup%alignment != 0, "startup must be positive and a multiple of 2Mi")
 	if v.Assigned != nil {
-		if *v.Assigned < 0 {
-			add("assigned must not be negative")
-		}
-		if !holdsMemory(v.State) && *v.Assigned != 0 {
-			add("assigned must be 0 in state %s", v.State)
-		}
+		check(*v.Assigned < 0, "assigned must not be negative")
+		check(!holdsMemory(v.State) && *v.Assigned != 0, "assigned must be 0 in state %s", v.State)
 	}
-	if v.ShrinkFloor != nil && *v.ShrinkFloor < 0 {
-		add("shrinkFloor must not be negative")
-	}
+	check(v.ShrinkFloor != nil && *v.ShrinkFloor < 0, "shrinkFloor must not be negative")
 	if dm := v.DynamicMemory; dm != nil {
-		if dm.Minimum <= 0 || dm.Minimum%alignment != 0 || dm.Maximum%alignment != 0 {
-			add("dynamicMemory minimum and maximum must be positive multiples of 2Mi")
-		}
-		if dm.Minimum > v.Startup || v.Startup > dm.Maximum {
-			add("dynamicMemory needs minimum ≤ startup ≤ maximum")
-		}
-		if dm.Buffer < 5 || dm.Buffer > 2000 {
-			add("dynamicMemory.buffer must be within 5–2000")
-		}
-		if dm.Priority < 0 || dm.Priority > 100 {
-			add("dynamicMemory.priority must be within 0–100")
-		}
+		check(dm.Minimum <= 0 || dm.Minimum%alignment != 0 || dm.Maximum%alignment != 0,
+			"dynamicMemory minimum and maximum must be positive multiples of 2Mi")
+		check(dm.Minimum > v.Startup || v.Startup > dm.Maximum, "dynamicMemory needs minimum ≤ startup ≤ maximum")
+		check(dm.Buffer < 5 || dm.Buffer > 2000, "dynamicMemory.buffer must be within 5–2000")
+		check(dm.Priority < 0 || dm.Priority > 100, "dynamicMemory.priority must be within 0–100")
 	}
-	return errs
+	return p.errs
 }

@@ -2,6 +2,7 @@ package fake
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -156,11 +157,7 @@ func (h *hostServer) writableLocked(name string) (*VMSpec, VMPolicySpec, error) 
 // SetStartup implements agentv1.HostAgentServer.
 func (h *hostServer) SetStartup(ctx context.Context, req *agentv1.SetStartupRequest) (*agentv1.SetStartupResponse, error) {
 	s := h.sim
-	name, n := req.GetVmName(), Bytes(req.GetStartupBytes())
-	if name == "" {
-		return nil, status.Error(codes.InvalidArgument, "vm_name is required")
-	}
-	if err := checkAligned("startup_bytes", req.GetStartupBytes()); err != nil {
+	if err := validateStartupRequest(req); err != nil {
 		return nil, err
 	}
 	if err := s.enter(ctx, h.name, "SetStartup", true); err != nil {
@@ -169,88 +166,134 @@ func (h *hostServer) SetStartup(ctx context.Context, req *agentv1.SetStartupRequ
 	if err := s.acquireWrite(ctx); err != nil {
 		return nil, err
 	}
-	release := true
-	defer func() {
-		if release {
-			s.releaseWrite()
-		}
-	}()
-
-	s.mu.Lock()
-	v, rule, err := h.writableLocked(name)
+	result, grow, err := h.applyStartup(req.GetVmName(), Bytes(req.GetStartupBytes()))
+	if grow != nil {
+		// growLater releases the write lock once the grow has landed.
+		return h.awaitGrow(ctx, grow)
+	}
+	s.releaseWrite()
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
-	if v.DynamicMemory != nil {
-		s.mu.Unlock()
-		return nil, status.Errorf(codes.FailedPrecondition, "VM %q uses Dynamic Memory; use SetDynamicLimits", name)
+	return &agentv1.SetStartupResponse{Result: result}, nil
+}
+
+func validateStartupRequest(req *agentv1.SetStartupRequest) error {
+	if req.GetVmName() == "" {
+		return status.Error(codes.InvalidArgument, "vm_name is required")
 	}
-	state := coarseState(v.State)
-	if state != agentv1.VMState_VM_STATE_RUNNING && state != agentv1.VMState_VM_STATE_OFF {
-		s.mu.Unlock()
-		return nil, status.Errorf(codes.FailedPrecondition, "VM %q is %s; memory can only be changed while running or off", name, v.State)
-	}
-	if n < rule.Min || n > rule.Max {
-		s.mu.Unlock()
-		return nil, status.Errorf(codes.PermissionDenied, "startup %s for VM %q is outside the policy's [%s, %s]", n, name, rule.Min, rule.Max)
+	return checkAligned("startup_bytes", req.GetStartupBytes())
+}
+
+// pendingGrow is a grow that lands after GrowLatency.
+type pendingGrow struct {
+	name    string
+	before  *agentv1.VM
+	done    <-chan struct{}
+	latency time.Duration
+	timeout time.Duration
+}
+
+// applyStartup checks and applies a SetStartup under the lock. It returns
+// the result of an immediate change, or a pendingGrow for a grow that takes
+// GrowLatency.
+func (h *hostServer) applyStartup(name string, n Bytes) (*agentv1.ResizeResult, *pendingGrow, error) {
+	s := h.sim
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, err := h.startupTargetLocked(name, n)
+	if err != nil {
+		return nil, nil, err
 	}
 	before := vmMessage(v, s.clock.Now())
 	cur := *v.Assigned
 	switch {
-	case state == agentv1.VMState_VM_STATE_OFF || n == cur:
+	case coarseState(v.State) == agentv1.VMState_VM_STATE_OFF || n == cur:
 		// Configuration only (VM off), or the assignment already matches:
 		// this also repairs a drifted MemoryStartup.
 		v.Startup = n
 	case n < cur:
-		if f := v.ShrinkFloor; f != nil && n < *f {
-			got := min(cur, alignUp(*f))
-			*v.Assigned = got
-			v.Startup = got
-			if v.StartupDrift {
-				v.Startup = n
-			}
-			after := vmMessage(v, s.clock.Now())
-			s.changedLocked()
-			s.mu.Unlock()
-			return nil, statusWithResult(codes.Aborted, before, after,
-				"guest released memory only down to %s of the requested %s", got, n)
+		if err := h.shrinkLocked(v, n, before); err != nil {
+			return nil, nil, err
 		}
-		*v.Assigned, v.Startup = n, n
-	default: // grow
+	default:
 		if delta := n - cur; delta > s.freeLocked() {
-			s.mu.Unlock()
-			return nil, statusWithResult(codes.ResourceExhausted, before, before,
+			return nil, nil, statusWithResult(codes.ResourceExhausted, before, before,
 				"host has %s free, grow of VM %q needs %s", s.freeLocked(), name, delta)
 		}
 		if latency := s.sc.Host.GrowLatency.D(); latency > 0 {
-			release = false
-			done := h.growLater(name, n, n-cur)
-			timeout := s.sc.Host.CmdletTimeout.D()
-			s.mu.Unlock()
-			if latency > timeout {
-				// The cmdlet outlives the agent's timeout; the grow still
-				// completes in the background, so the outcome is unknown to
-				// the caller.
-				return nil, s.wait(ctx, nil, timeout)
-			}
-			if err := s.wait(ctx, done, -1); err != nil {
-				return nil, err
-			}
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			after := before
-			if v := s.sc.vm(name); v != nil {
-				after = vmMessage(v, s.clock.Now())
-			}
-			return &agentv1.SetStartupResponse{Result: &agentv1.ResizeResult{Before: before, After: after}}, nil
+			return nil, &pendingGrow{
+				name: name, before: before, done: h.growLater(name, n, n-cur),
+				latency: latency, timeout: s.sc.Host.CmdletTimeout.D(),
+			}, nil
 		}
 		*v.Assigned, v.Startup = n, n
 	}
 	after := vmMessage(v, s.clock.Now())
 	s.changedLocked()
-	s.mu.Unlock()
-	return &agentv1.SetStartupResponse{Result: &agentv1.ResizeResult{Before: before, After: after}}, nil
+	return &agentv1.ResizeResult{Before: before, After: after}, nil, nil
+}
+
+// startupTargetLocked returns the VM a SetStartup may change, or the error
+// that refuses it.
+func (h *hostServer) startupTargetLocked(name string, n Bytes) (*VMSpec, error) {
+	v, rule, err := h.writableLocked(name)
+	if err != nil {
+		return nil, err
+	}
+	if v.DynamicMemory != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "VM %q uses Dynamic Memory; use SetDynamicLimits", name)
+	}
+	if state := coarseState(v.State); state != agentv1.VMState_VM_STATE_RUNNING && state != agentv1.VMState_VM_STATE_OFF {
+		return nil, status.Errorf(codes.FailedPrecondition, "VM %q is %s; memory can only be changed while running or off", name, v.State)
+	}
+	if n < rule.Min || n > rule.Max {
+		return nil, status.Errorf(codes.PermissionDenied, "startup %s for VM %q is outside the policy's [%s, %s]", n, name, rule.Min, rule.Max)
+	}
+	return v, nil
+}
+
+// shrinkLocked shrinks a running VM to n. Below the VM's shrink floor the
+// guest gives up memory only down to the floor: the partial (or no) change
+// is applied and ABORTED returned, with MemoryStartup at the requested value
+// if the VM drifts.
+func (h *hostServer) shrinkLocked(v *VMSpec, n Bytes, before *agentv1.VM) error {
+	s := h.sim
+	f := v.ShrinkFloor
+	if f == nil || n >= *f {
+		*v.Assigned, v.Startup = n, n
+		return nil
+	}
+	got := min(*v.Assigned, alignUp(*f))
+	*v.Assigned = got
+	v.Startup = got
+	if v.StartupDrift {
+		v.Startup = n
+	}
+	after := vmMessage(v, s.clock.Now())
+	s.changedLocked()
+	return statusWithResult(codes.Aborted, before, after,
+		"guest released memory only down to %s of the requested %s", got, n)
+}
+
+// awaitGrow waits for an in-flight grow. A grow slower than the cmdlet
+// timeout still completes in the background, so the caller gets
+// DEADLINE_EXCEEDED and an unknown outcome.
+func (h *hostServer) awaitGrow(ctx context.Context, g *pendingGrow) (*agentv1.SetStartupResponse, error) {
+	s := h.sim
+	if g.latency > g.timeout {
+		return nil, s.wait(ctx, nil, g.timeout)
+	}
+	if err := s.wait(ctx, g.done, -1); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	after := g.before
+	if v := s.sc.vm(g.name); v != nil {
+		after = vmMessage(v, s.clock.Now())
+	}
+	return &agentv1.SetStartupResponse{Result: &agentv1.ResizeResult{Before: g.before, After: after}}, nil
 }
 
 // growLater reserves delta of host memory for an in-flight grow and applies
@@ -280,25 +323,8 @@ func (h *hostServer) growLater(name string, n, delta Bytes) <-chan struct{} {
 // SetDynamicLimits implements agentv1.HostAgentServer.
 func (h *hostServer) SetDynamicLimits(ctx context.Context, req *agentv1.SetDynamicLimitsRequest) (*agentv1.SetDynamicLimitsResponse, error) {
 	s := h.sim
-	name := req.GetVmName()
-	if name == "" {
-		return nil, status.Error(codes.InvalidArgument, "vm_name is required")
-	}
-	if req.MinimumBytes == nil && req.MaximumBytes == nil {
-		return nil, status.Error(codes.InvalidArgument, "set minimum_bytes, maximum_bytes or both")
-	}
-	if req.MinimumBytes != nil {
-		if err := checkAligned("minimum_bytes", req.GetMinimumBytes()); err != nil {
-			return nil, err
-		}
-	}
-	if req.MaximumBytes != nil {
-		if err := checkAligned("maximum_bytes", req.GetMaximumBytes()); err != nil {
-			return nil, err
-		}
-	}
-	if req.MinimumBytes != nil && req.MaximumBytes != nil && req.GetMinimumBytes() > req.GetMaximumBytes() {
-		return nil, status.Error(codes.InvalidArgument, "minimum_bytes is above maximum_bytes")
+	if err := validateDynamicLimitsRequest(req); err != nil {
+		return nil, err
 	}
 	if err := s.enter(ctx, h.name, "SetDynamicLimits", true); err != nil {
 		return nil, err
@@ -310,6 +336,7 @@ func (h *hostServer) SetDynamicLimits(ctx context.Context, req *agentv1.SetDynam
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	name := req.GetVmName()
 	v, rule, err := h.writableLocked(name)
 	if err != nil {
 		return nil, err
@@ -325,23 +352,55 @@ func (h *hostServer) SetDynamicLimits(ctx context.Context, req *agentv1.SetDynam
 	if req.MaximumBytes != nil {
 		newMax = Bytes(req.GetMaximumBytes())
 	}
-	switch {
-	case newMin > newMax:
-		return nil, status.Errorf(codes.InvalidArgument, "minimum %s would be above maximum %s", newMin, newMax)
-	case newMax < dm.Maximum:
-		return nil, status.Errorf(codes.FailedPrecondition, "Dynamic Memory maximum of VM %q may only be raised (current %s, requested %s)", name, dm.Maximum, newMax)
-	case newMin > dm.Minimum:
-		return nil, status.Errorf(codes.FailedPrecondition, "Dynamic Memory minimum of VM %q may only be lowered (current %s, requested %s)", name, dm.Minimum, newMin)
-	case newMin < rule.Min:
-		return nil, status.Errorf(codes.PermissionDenied, "minimum %s for VM %q is below the policy's min %s", newMin, name, rule.Min)
-	case newMax > rule.Max:
-		return nil, status.Errorf(codes.PermissionDenied, "maximum %s for VM %q is above the policy's max %s", newMax, name, rule.Max)
+	if err := checkDynamicLimits(name, dm, rule, newMin, newMax); err != nil {
+		return nil, err
 	}
 	before := vmMessage(v, s.clock.Now())
 	dm.Minimum, dm.Maximum = newMin, newMax
 	after := vmMessage(v, s.clock.Now())
 	s.changedLocked()
 	return &agentv1.SetDynamicLimitsResponse{Result: &agentv1.ResizeResult{Before: before, After: after}}, nil
+}
+
+func validateDynamicLimitsRequest(req *agentv1.SetDynamicLimitsRequest) error {
+	if req.GetVmName() == "" {
+		return status.Error(codes.InvalidArgument, "vm_name is required")
+	}
+	if req.MinimumBytes == nil && req.MaximumBytes == nil {
+		return status.Error(codes.InvalidArgument, "set minimum_bytes, maximum_bytes or both")
+	}
+	if req.MinimumBytes != nil {
+		if err := checkAligned("minimum_bytes", req.GetMinimumBytes()); err != nil {
+			return err
+		}
+	}
+	if req.MaximumBytes != nil {
+		if err := checkAligned("maximum_bytes", req.GetMaximumBytes()); err != nil {
+			return err
+		}
+	}
+	if req.MinimumBytes != nil && req.MaximumBytes != nil && req.GetMinimumBytes() > req.GetMaximumBytes() {
+		return status.Error(codes.InvalidArgument, "minimum_bytes is above maximum_bytes")
+	}
+	return nil
+}
+
+// checkDynamicLimits applies the DM direction rules and the policy bounds
+// to the requested limits.
+func checkDynamicLimits(name string, dm *DynamicMemorySpec, rule VMPolicySpec, newMin, newMax Bytes) error {
+	switch {
+	case newMin > newMax:
+		return status.Errorf(codes.InvalidArgument, "minimum %s would be above maximum %s", newMin, newMax)
+	case newMax < dm.Maximum:
+		return status.Errorf(codes.FailedPrecondition, "Dynamic Memory maximum of VM %q may only be raised (current %s, requested %s)", name, dm.Maximum, newMax)
+	case newMin > dm.Minimum:
+		return status.Errorf(codes.FailedPrecondition, "Dynamic Memory minimum of VM %q may only be lowered (current %s, requested %s)", name, dm.Minimum, newMin)
+	case newMin < rule.Min:
+		return status.Errorf(codes.PermissionDenied, "minimum %s for VM %q is below the policy's min %s", newMin, name, rule.Min)
+	case newMax > rule.Max:
+		return status.Errorf(codes.PermissionDenied, "maximum %s for VM %q is above the policy's max %s", newMax, name, rule.Max)
+	}
+	return nil
 }
 
 // ProposePolicy implements agentv1.HostAgentServer.

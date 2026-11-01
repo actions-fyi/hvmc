@@ -1,6 +1,7 @@
 package fake_test
 
 import (
+	"context"
 	"runtime"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
@@ -113,48 +115,22 @@ func TestConcurrentControlAndRPCs(t *testing.T) {
 	ctx := testCtx(t)
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	run := func(f func(i int)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; ; i++ {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				f(i)
-			}
-		}()
-	}
+	run := func(f func(i int)) { repeatUntil(&wg, stop, f) }
+
 	// Watchers.
-	for _, watch := range []func() error{
-		func() error {
-			s, err := e.host.WatchVMs(ctx, &agentv1.WatchVMsRequest{})
-			if err != nil {
-				return err
-			}
-			for {
-				if _, err := s.Recv(); err != nil {
-					return err
-				}
-			}
-		},
-		func() error {
-			s, err := e.guest("vm-a").WatchMemory(ctx, &agentv1.WatchMemoryRequest{})
-			if err != nil {
-				return err
-			}
-			for {
-				if _, err := s.Recv(); err != nil {
-					return err
-				}
-			}
-		},
-	} {
-		wg.Add(1)
-		go func() { defer wg.Done(); _ = watch() }()
-	}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if s, err := e.host.WatchVMs(ctx, &agentv1.WatchVMsRequest{}); err == nil {
+			drain(s)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if s, err := e.guest("vm-a").WatchMemory(ctx, &agentv1.WatchMemoryRequest{}); err == nil {
+			drain(s)
+		}
+	}()
 	run(func(i int) {
 		size := int64(6+i%6) * gib
 		_, _ = e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-a", StartupBytes: size})
@@ -170,14 +146,7 @@ func TestConcurrentControlAndRPCs(t *testing.T) {
 	})
 	run(func(int) { e.clk.Advance(500 * time.Millisecond) })
 
-	// Drive the clock until every kind of call has run a few times.
-	for e.sim.CallCount("hyperv-1", "SetStartup") < 20 || e.sim.CallCount("vm-a", "GetMemory") < 20 {
-		if ctx.Err() != nil {
-			t.Fatal("concurrent calls did not make progress")
-		}
-		e.clk.Advance(100 * time.Millisecond)
-		runtime.Gosched()
-	}
+	driveUntilBusy(ctx, t, e)
 	close(stop)
 	// Let in-flight grows finish and streams end.
 	for range 10 {
@@ -191,5 +160,43 @@ func TestConcurrentControlAndRPCs(t *testing.T) {
 	// The state is still consistent.
 	if err := e.sim.Scenario().Validate(); err != nil {
 		t.Errorf("state invalid after concurrent use: %v", err)
+	}
+}
+
+// repeatUntil calls f(0), f(1), ... on a new goroutine until stop is closed.
+func repeatUntil(wg *sync.WaitGroup, stop <-chan struct{}, f func(i int)) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			f(i)
+		}
+	}()
+}
+
+// drain receives from a stream until it ends.
+func drain[T any](s grpc.ServerStreamingClient[T]) {
+	for {
+		if _, err := s.Recv(); err != nil {
+			return
+		}
+	}
+}
+
+// driveUntilBusy drives the clock until every kind of call has run a few
+// times.
+func driveUntilBusy(ctx context.Context, t *testing.T, e *env) {
+	t.Helper()
+	for e.sim.CallCount("hyperv-1", "SetStartup") < 20 || e.sim.CallCount("vm-a", "GetMemory") < 20 {
+		if ctx.Err() != nil {
+			t.Fatal("concurrent calls did not make progress")
+		}
+		e.clk.Advance(100 * time.Millisecond)
+		runtime.Gosched()
 	}
 }

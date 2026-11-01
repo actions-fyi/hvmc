@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -118,36 +119,16 @@ func (c *certServer) InstallCertificate(ctx context.Context, req *agentv1.Instal
 		return nil, err
 	}
 	chainDER := req.GetCertificateChainDer()
-	if len(chainDER) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "certificate chain is empty")
-	}
-	chain := make([]*x509.Certificate, 0, len(chainDER))
-	for _, der := range chainDER {
-		cert, err := x509.ParseCertificate(der)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "parse certificate: %v", err)
-		}
-		chain = append(chain, cert)
+	chain, err := parseServingChain(chainDER)
+	if err != nil {
+		return nil, err
 	}
 	leaf := chain[0]
-	if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) && !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageAny) {
-		return nil, status.Error(codes.InvalidArgument, "leaf is not a serving certificate (no serverAuth usage)")
-	}
-
 	s.mu.Lock()
 	ca := s.ca
 	s.mu.Unlock()
-	if ca != nil {
-		inter := x509.NewCertPool()
-		for _, ic := range chain[1:] {
-			inter.AddCert(ic)
-		}
-		if _, err := leaf.Verify(x509.VerifyOptions{
-			Roots: ca, Intermediates: inter, CurrentTime: s.clock.Now(),
-			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}); err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "chain does not verify against the hvmc CA: %v", err)
-		}
+	if err := verifyChain(chain, ca, s.clock.Now()); err != nil {
+		return nil, err
 	}
 
 	s.mu.Lock()
@@ -171,6 +152,46 @@ func (c *certServer) InstallCertificate(ctx context.Context, req *agentv1.Instal
 	st.pending = nil
 	st.installs++
 	return &agentv1.InstallCertificateResponse{NotAfter: timestamppb.New(leaf.NotAfter)}, nil
+}
+
+// parseServingChain parses a DER chain whose leaf must be a serving
+// certificate.
+func parseServingChain(chainDER [][]byte) ([]*x509.Certificate, error) {
+	if len(chainDER) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "certificate chain is empty")
+	}
+	chain := make([]*x509.Certificate, 0, len(chainDER))
+	for _, der := range chainDER {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "parse certificate: %v", err)
+		}
+		chain = append(chain, cert)
+	}
+	usage := chain[0].ExtKeyUsage
+	if !slices.Contains(usage, x509.ExtKeyUsageServerAuth) && !slices.Contains(usage, x509.ExtKeyUsageAny) {
+		return nil, status.Error(codes.InvalidArgument, "leaf is not a serving certificate (no serverAuth usage)")
+	}
+	return chain, nil
+}
+
+// verifyChain verifies the chain against the CA pool; a nil pool skips
+// verification.
+func verifyChain(chain []*x509.Certificate, ca *x509.CertPool, now time.Time) error {
+	if ca == nil {
+		return nil
+	}
+	inter := x509.NewCertPool()
+	for _, ic := range chain[1:] {
+		inter.AddCert(ic)
+	}
+	if _, err := chain[0].Verify(x509.VerifyOptions{
+		Roots: ca, Intermediates: inter, CurrentTime: now,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		return status.Errorf(codes.InvalidArgument, "chain does not verify against the hvmc CA: %v", err)
+	}
+	return nil
 }
 
 // ServingCertificate returns the agent's current serving pair, for use in a
