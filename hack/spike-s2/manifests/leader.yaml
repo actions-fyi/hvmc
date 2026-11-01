@@ -1,0 +1,42 @@
+# Check 6: two stand-in replicas and a Service that selects only the pod
+# labelled hvmc.fax.fyi/leader=true (DESIGN §6). No readiness probe, so a
+# pod's endpoint is ready as soon as it runs.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: leader-a
+  namespace: spike-test
+  labels: {app: leader-spike}
+spec:
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: c
+      image: ${PAUSE_IMAGE}
+      ports:
+        - {name: http, containerPort: 8080}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: leader-b
+  namespace: spike-test
+  labels: {app: leader-spike}
+spec:
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: c
+      image: ${PAUSE_IMAGE}
+      ports:
+        - {name: http, containerPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: leader-spike
+  namespace: spike-test
+spec:
+  selector:
+    app: leader-spike
+    hvmc.fax.fyi/leader: "true"
+  ports:
+    - {name: http, port: 8080, targetPort: http}

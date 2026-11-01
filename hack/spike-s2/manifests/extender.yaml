@@ -1,0 +1,71 @@
+# Stub extender (hack/spike-s2/extender): filter/prioritize/bind over HTTP.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stub-extender
+  namespace: hvmc-spike
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spike-stub-extender
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/binding"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spike-stub-extender
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spike-stub-extender
+subjects:
+  - kind: ServiceAccount
+    name: stub-extender
+    namespace: hvmc-spike
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stub-extender
+  namespace: hvmc-spike
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: stub-extender}
+  template:
+    metadata:
+      labels: {app: stub-extender}
+    spec:
+      serviceAccountName: stub-extender
+      containers:
+        - name: extender
+          image: spike.local/stub-extender:dev
+          imagePullPolicy: Never
+          args: ["-listen=:8888"]
+          ports:
+            - {name: http, containerPort: 8888}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stub-extender
+  namespace: hvmc-spike
+spec:
+  selector: {app: stub-extender}
+  ports:
+    - {name: http, port: 8888, targetPort: http}

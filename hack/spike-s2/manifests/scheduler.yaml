@@ -1,0 +1,113 @@
+# Second upstream kube-scheduler as in DESIGN §7.2, with exactly the RBAC the
+# design lists (system:kube-scheduler, system:volume-scheduler,
+# extension-apiserver-authentication-reader). run.sh substitutes
+# ${SCHEDULER_IMAGE} from the server version, like the chart would.
+# TLS to the extender is left out: the stub serves plain HTTP.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hvmc-scheduler
+  namespace: hvmc-spike
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spike-hvmc-scheduler-kube-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:kube-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-scheduler
+    namespace: hvmc-spike
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spike-hvmc-scheduler-volume-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:volume-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-scheduler
+    namespace: hvmc-spike
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spike-hvmc-scheduler-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-scheduler
+    namespace: hvmc-spike
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hvmc-scheduler-config
+  namespace: hvmc-spike
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: true
+      resourceName: hvmc-scheduler
+      resourceNamespace: hvmc-spike
+    profiles:
+      - schedulerName: hvmc-scheduler
+    extenders:
+      - urlPrefix: http://stub-extender.hvmc-spike.svc:8888/scheduler
+        filterVerb: filter
+        prioritizeVerb: prioritize
+        bindVerb: bind
+        weight: 1
+        enableHTTPS: false
+        httpTimeout: 30s
+        nodeCacheCapable: true
+        ignorable: false
+        managedResources:
+          - name: hvmc.fax.fyi/ram
+            ignoredByScheduler: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hvmc-scheduler
+  namespace: hvmc-spike
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: hvmc-scheduler}
+  template:
+    metadata:
+      labels: {app: hvmc-scheduler}
+    spec:
+      serviceAccountName: hvmc-scheduler
+      containers:
+        - name: kube-scheduler
+          image: ${SCHEDULER_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command:
+            - kube-scheduler
+            - --config=/etc/hvmc-scheduler/config.yaml
+            - --v=4
+          volumeMounts:
+            - {name: config, mountPath: /etc/hvmc-scheduler, readOnly: true}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: config
+          configMap: {name: hvmc-scheduler-config}

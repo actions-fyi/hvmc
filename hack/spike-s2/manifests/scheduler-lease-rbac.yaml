@@ -1,0 +1,31 @@
+# Applied only if the DESIGN §7.2 bindings are not enough for leader
+# election: system:kube-scheduler grants get/update on leases named
+# "kube-scheduler" only, so a scheduler using resourceName hvmc-scheduler
+# needs its own Role in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hvmc-scheduler-leader-election
+  namespace: hvmc-spike
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["hvmc-scheduler"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hvmc-scheduler-leader-election
+  namespace: hvmc-spike
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hvmc-scheduler-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-scheduler
+    namespace: hvmc-spike

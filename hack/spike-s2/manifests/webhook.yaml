@@ -1,0 +1,46 @@
+# Stub mutating webhook (hack/spike-s2/webhook). The serving certificate is
+# created by run.sh as Secret stub-webhook-tls.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stub-webhook
+  namespace: hvmc-spike
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: stub-webhook}
+  template:
+    metadata:
+      labels: {app: stub-webhook}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: webhook
+          image: spike.local/stub-webhook:dev
+          imagePullPolicy: Never
+          args: ["-listen=:9444", "-scheduler-name=hvmc-scheduler", "-memory-request=64Mi"]
+          ports:
+            - {name: https, containerPort: 9444}
+          readinessProbe:
+            httpGet: {path: /healthz, port: https, scheme: HTTPS}
+            periodSeconds: 1
+          volumeMounts:
+            - {name: tls, mountPath: /etc/webhook/tls, readOnly: true}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: tls
+          secret: {secretName: stub-webhook-tls}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stub-webhook
+  namespace: hvmc-spike
+spec:
+  selector: {app: stub-webhook}
+  ports:
+    - {name: https, port: 443, targetPort: https}
