@@ -19,10 +19,17 @@ var defaultReserve = resource.MustParse("4Gi")
 //   - mode static or dynamic without a policy, including probe VMs: writable
 //     (lease grows and probe resizes still need the agent to write; such a
 //     VM only has no reconciler), with min = base, because the ledger never
-//     targets less than floor ≥ base + margin, and max = capacity − reserve
-//     when spec.capacity is set, because the ledger never commits more than
-//     that in total; with capacity 0 (read from the host) the spec holds no
-//     ceiling and max is Unbounded. max is never below min.
+//     targets less than floor ≥ base + margin, and max = capacity − reserve,
+//     because the ledger never commits more than that in total. capacity is
+//     spec.capacity when non-zero, otherwise status.observedHost.capacity
+//     once the coordinator has observed the host; when neither is known, max
+//     is Unbounded. max is never below min.
+//
+// Because the ceiling can come from status, the derived policy (and its
+// digest) changes when the host is first observed: the coordinator then
+// proposes the new policy and PolicyInSync stays False until the operator
+// runs `hvmc agent policy sync`. Operators who want tighter bounds for a VM
+// without the reconciler set a policy with grow: false and shrink: false.
 //
 // VMs on the host that are not in spec.vms stay unlisted, i.e. read-only.
 // Fractional byte values are rounded up. A nil HostConfig yields the empty
@@ -34,7 +41,7 @@ func FromHostConfig(hc *v1alpha1.HostConfig) Policy {
 		return p
 	}
 	ceiling := Unbounded
-	if c := hc.Spec.Capacity; c != nil && c.Sign() > 0 {
+	if c := hostCapacity(hc); c != nil {
 		reserve := defaultReserve
 		if hc.Spec.Reserve != nil {
 			reserve = *hc.Spec.Reserve
@@ -56,4 +63,16 @@ func FromHostConfig(hc *v1alpha1.HostConfig) Policy {
 		p.VMs = append(p.VMs, vm)
 	}
 	return p
+}
+
+// hostCapacity returns spec.capacity if non-zero, otherwise the observed
+// capacity from status if positive, otherwise nil.
+func hostCapacity(hc *v1alpha1.HostConfig) *resource.Quantity {
+	if c := hc.Spec.Capacity; c != nil && c.Sign() > 0 {
+		return c
+	}
+	if o := hc.Status.ObservedHost; o != nil && o.Capacity != nil && o.Capacity.Sign() > 0 {
+		return o.Capacity
+	}
+	return nil
 }

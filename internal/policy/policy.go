@@ -13,6 +13,14 @@
 // depends only on the policy's content: not on VM order, YAML formatting,
 // key order or how a quantity is spelled ("8Gi" and "8192Mi" are equal).
 //
+// A writable VM without a HostConfig policy is bounded by [base, capacity −
+// reserve], where capacity falls back to the observed host capacity when
+// spec.capacity is 0 (see [FromHostConfig]). The derived policy therefore
+// changes once the host is first observed: the coordinator proposes it and
+// PolicyInSync stays False until `hvmc agent policy sync` activates it.
+// Operators who want tighter bounds without the reconciler set a policy with
+// grow: false and shrink: false.
+//
 // The package is pure apart from [Load] and [Save]. All sizes are bytes.
 package policy
 

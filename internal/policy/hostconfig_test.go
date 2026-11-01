@@ -39,6 +39,10 @@ func TestFromHostConfig(t *testing.T) {
 	withSpec := func(capacity, reserve *resource.Quantity, vms ...v1alpha1.VMSpec) *v1alpha1.HostConfig {
 		return &v1alpha1.HostConfig{Spec: v1alpha1.HostConfigSpec{Capacity: capacity, Reserve: reserve, VMs: vms}}
 	}
+	observed := func(hc *v1alpha1.HostConfig, capacity *resource.Quantity) *v1alpha1.HostConfig {
+		hc.Status.ObservedHost = &v1alpha1.ObservedHost{Capacity: capacity}
+		return hc
+	}
 	tests := []struct {
 		name string
 		hc   *v1alpha1.HostConfig
@@ -83,14 +87,47 @@ func TestFromHostConfig(t *testing.T) {
 			want: []VM{{Name: "s", Min: 6 * gi, Max: 24 * gi}, {Name: "d", Min: 2 * gi, Max: 128 * gi}},
 		},
 		{
-			name: "without policy and capacity 0: [base, unbounded]",
+			name: "without policy, spec capacity 0 and nothing observed: [base, unbounded]",
 			hc:   withSpec(qp("0"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil), win("d", v1alpha1.VMModeDynamic, "3Gi", nil)),
 			want: []VM{{Name: "s", Min: 4 * gi, Max: Unbounded}, {Name: "d", Min: 3 * gi, Max: Unbounded}},
 		},
 		{
-			name: "without policy and capacity set: [base, capacity - reserve]",
+			name: "without policy and spec capacity set: [base, capacity - reserve]",
 			hc:   withSpec(qp("64Gi"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil), win("d", v1alpha1.VMModeDynamic, "3Gi", nil)),
 			want: []VM{{Name: "s", Min: 4 * gi, Max: 56 * gi}, {Name: "d", Min: 3 * gi, Max: 56 * gi}},
+		},
+		{
+			name: "without policy, spec capacity wins over observed",
+			hc:   observed(withSpec(qp("64Gi"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil)), qp("128Gi")),
+			want: []VM{{Name: "s", Min: 4 * gi, Max: 56 * gi}},
+		},
+		{
+			name: "without policy, spec capacity 0, observed capacity: [base, observed - reserve]",
+			hc:   observed(withSpec(qp("0"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil), win("d", v1alpha1.VMModeDynamic, "3Gi", nil)), qp("128Gi")),
+			want: []VM{{Name: "s", Min: 4 * gi, Max: 120 * gi}, {Name: "d", Min: 3 * gi, Max: 120 * gi}},
+		},
+		{
+			name: "without policy, spec capacity unset, observed capacity",
+			hc:   observed(withSpec(nil, qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil)), qp("32Gi")),
+			want: []VM{{Name: "s", Min: 4 * gi, Max: 24 * gi}},
+		},
+		{
+			name: "without policy, spec capacity 0, observedHost without capacity: unbounded",
+			hc:   observed(withSpec(qp("0"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil)), nil),
+			want: []VM{{Name: "s", Min: 4 * gi, Max: Unbounded}},
+		},
+		{
+			name: "without policy, spec capacity 0, observed capacity 0: unbounded",
+			hc:   observed(withSpec(qp("0"), qp("8Gi"), win("s", v1alpha1.VMModeStatic, "4Gi", nil)), qp("0")),
+			want: []VM{{Name: "s", Min: 4 * gi, Max: Unbounded}},
+		},
+		{
+			name: "observed capacity does not affect VMs with a policy or fixed VMs",
+			hc: observed(withSpec(qp("0"), qp("8Gi"),
+				win("s", v1alpha1.VMModeStatic, "4Gi", vmPolicy("6Gi", "24Gi")),
+				v1alpha1.VMSpec{Name: "l", GuestOS: v1alpha1.GuestOSLinux, Mode: v1alpha1.VMModeFixed, Base: resource.MustParse("2Gi")},
+			), qp("128Gi")),
+			want: []VM{{Name: "s", Min: 6 * gi, Max: 24 * gi}, {Name: "l", Fixed: true}},
 		},
 		{
 			name: "without policy, capacity set, reserve defaulted to 4Gi",
@@ -125,14 +162,29 @@ func TestFromHostConfigDigestIgnoresNonPolicyFields(t *testing.T) {
 	a := designHostConfig()
 	b := designHostConfig()
 	b.Spec.DefaultMargin = qp("4Gi")
-	b.Spec.Reserve = qp("16Gi") // capacity is 0, so reserve does not bound anything
+	b.Spec.Reserve = qp("16Gi") // capacity is 0 and not observed, so reserve bounds nothing
 	b.Spec.VMs[0].Base = resource.MustParse("8Gi")
 	b.Spec.VMs[1].Base = resource.MustParse("5Gi")
 	b.Spec.VMs[1].Policy.Shrink = new(false)
 	b.Spec.VMs[1].Policy.Max = resource.MustParse("24576Mi")
 	b.Spec.VMs[0], b.Spec.VMs[3] = b.Spec.VMs[3], b.Spec.VMs[0]
 	b.Status.VMs = []v1alpha1.VMStatus{{Name: "linux-node-1"}}
+	b.Status.ObservedHost = &v1alpha1.ObservedHost{Free: qp("10Gi"), Pool: qp("4Gi")}
 	if FromHostConfig(a).Digest() != FromHostConfig(b).Digest() {
 		t.Fatalf("digests differ:\n%s\n%s", FromHostConfig(a).Canonical(), FromHostConfig(b).Canonical())
+	}
+}
+
+func TestFromHostConfigFirstObservationChangesDigest(t *testing.T) {
+	hc := designHostConfig()
+	before := FromHostConfig(hc)
+	hc.Status.ObservedHost = &v1alpha1.ObservedHost{Capacity: qp("128Gi")}
+	after := FromHostConfig(hc)
+	if before.Digest() == after.Digest() {
+		t.Fatal("digest unchanged after the host capacity was observed")
+	}
+	want := "~ docker-host-1: max unbounded -> 124Gi\n~ probe-1: max unbounded -> 124Gi\n"
+	if got := Diff(before, after).String(); got != want {
+		t.Fatalf("Diff =\n%s\nwant\n%s", got, want)
 	}
 }
