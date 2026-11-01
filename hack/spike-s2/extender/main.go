@@ -11,7 +11,15 @@
 //     filter calls for that pod UID;
 //   - pod annotation spike.hvmc.fax.fyi/reject-until-generation: "G" rejects
 //     every filter call while hvmc.fax.fyi/queue-generation is below G, which
-//     simulates "not grantable until the coordinator nudges the pod".
+//     simulates "not grantable until the coordinator nudges the pod";
+//   - pod annotation spike.hvmc.fax.fyi/volatile-reason: "true" puts the call
+//     number into the FailedNodes text, so it changes on every call (like a
+//     reason that carries a queue position or current headroom).
+//
+// With -watch-namespace it also watches pods and logs every change of the
+// hvmc.fax.fyi/queue-generation annotation, so the latency from "pod update
+// visible to watchers" to "next filter call" is measured on one monotonic
+// clock (mono_ms, milliseconds since process start).
 package main
 
 import (
@@ -30,17 +38,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 )
 
 const (
 	annRejectFirst      = "spike.hvmc.fax.fyi/reject-first-filters"
 	annRejectUntilGen   = "spike.hvmc.fax.fyi/reject-until-generation"
+	annVolatileReason   = "spike.hvmc.fax.fyi/volatile-reason"
 	annQueueGeneration  = "hvmc.fax.fyi/queue-generation"
 	maxRequestBodyBytes = 8 << 20
 )
+
+// start anchors mono_ms; time.Since uses the monotonic clock reading, so
+// intervals survive wall-clock steps on the host.
+var start = time.Now()
 
 type server struct {
 	client      kubernetes.Interface
@@ -53,6 +68,7 @@ type server struct {
 func main() {
 	listen := flag.String("listen", ":8888", "listen address")
 	rejectFirst := flag.Int("reject-first", 0, "reject the first N filter calls of every pod (annotation overrides)")
+	watchNamespace := flag.String("watch-namespace", "", "log queue-generation changes of pods in this namespace")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -69,6 +85,12 @@ func main() {
 	}
 
 	s := &server{client: client, rejectFirst: *rejectFirst, filters: map[types.UID]int{}}
+	if *watchNamespace != "" {
+		if err := watchQueueGeneration(client, *watchNamespace); err != nil {
+			slog.Error("watch", "err", err)
+			os.Exit(1)
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /scheduler/filter", s.filter)
 	mux.HandleFunc("POST /scheduler/prioritize", s.prioritize)
@@ -86,7 +108,31 @@ func main() {
 // logCall writes one JSON line with a millisecond timestamp that run.sh
 // compares against its own clock (same kernel clock inside kind).
 func logCall(msg string, args ...any) {
-	slog.Info(msg, append([]any{"unix_ms", time.Now().UnixMilli()}, args...)...)
+	slog.Info(msg, append([]any{"unix_ms", time.Now().UnixMilli(), "mono_ms", time.Since(start).Milliseconds()}, args...)...)
+}
+
+// watchQueueGeneration logs every change of the queue-generation annotation
+// as the extender's informer sees it, which approximates when the
+// scheduler's own pod informer sees the same update.
+func watchQueueGeneration(client kubernetes.Interface, namespace string) error {
+	factory := informers.NewSharedInformerFactoryWithOptions(client, 0, informers.WithNamespace(namespace))
+	inf := factory.Core().V1().Pods().Informer()
+	_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj any) {
+			o, ok1 := oldObj.(*corev1.Pod)
+			n, ok2 := newObj.(*corev1.Pod)
+			if !ok1 || !ok2 || o.Annotations[annQueueGeneration] == n.Annotations[annQueueGeneration] {
+				return
+			}
+			logCall("pod-update", "pod", podKey(n), "queueGeneration", n.Annotations[annQueueGeneration],
+				"resourceVersion", n.ResourceVersion)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	factory.Start(context.Background().Done())
+	return nil
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -148,7 +194,10 @@ func (s *server) rejectReason(p *corev1.Pod, n int) string {
 		limit = v
 	}
 	if n <= limit {
-		return fmt.Sprintf("spike: rejecting filter call %d of first %d", n, limit)
+		if p.Annotations[annVolatileReason] == "true" {
+			return fmt.Sprintf("spike: rejecting filter call %d of first %d", n, limit)
+		}
+		return fmt.Sprintf("spike: rejecting the first %d filter calls", limit)
 	}
 	if want, ok := annotationInt(p, annRejectUntilGen); ok {
 		have, _ := annotationInt(p, annQueueGeneration)

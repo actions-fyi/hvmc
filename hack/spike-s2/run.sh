@@ -27,7 +27,13 @@ export PAUSE_IMAGE
 
 RESULTS=()
 
-now_ms() { date +%s%3N; }
+# Monotonic milliseconds (CLOCK_BOOTTIME via /proc/uptime, 10 ms steps): the
+# runner's wall clock was seen stepping by ~0.7 s during a run.
+now_ms() {
+  local up
+  read -r up _ </proc/uptime
+  echo $((10#${up/./} * 10))
+}
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S.%3N)" "$*"; }
 section() { printf '\n========== %s ==========\n' "$*"; }
 
@@ -69,11 +75,9 @@ pod_json() {
 # Error text of a rejected create, without the kubectl prefix.
 api_error() { sed -e 's/^Error from server ([A-Za-z]*): //' -e 's/^error when creating "STDIN": //' | tr '\n' ' ' | cut -c1-300; }
 
-ext_log() { kubectl -n "$NS" logs deploy/stub-extender --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="filter" or .msg=="prioritize" or .msg=="bind")'; }
+ext_log() { kubectl -n "$NS" logs deploy/stub-extender --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="filter" or .msg=="prioritize" or .msg=="bind" or .msg=="pod-update")'; }
 wh_log() { kubectl -n "$NS" logs deploy/stub-webhook --tail=-1 2>/dev/null | jq -Rc 'fromjson? | select(.msg=="admission")'; }
 wh_count() { wh_log | wc -l | tr -d ' '; }
-# filter_ms <pod>: Unix-ms timestamps of every filter call for the pod.
-filter_ms() { ext_log | jq -r --arg p "$TNS/$1" 'select(.msg=="filter" and .pod==$p) | .unix_ms'; }
 # intervals: successive differences of a number column, comma separated.
 intervals() { awk 'NR>1 {printf "%s%d", (NR>2 ? "," : ""), $1-prev} {prev=$1}'; }
 scheduled_by() { kubectl -n "$TNS" get events --field-selector "involvedObject.name=$1,reason=Scheduled" -o json | jq -r '.items[0] | (.reportingComponent // .source.component // "none")'; }
@@ -275,7 +279,7 @@ check4() {
     wait_until 90 pod_ready "$p" || { ok=0; notes+=("$p not Ready within 90 s"); }
   done
   ext_log | jq -c 'del(.time, .level)'
-  pods=$(ext_log | jq -r .pod | sort -u | tr '\n' ' ')
+  pods=$(ext_log | jq -r 'select(.msg != "pod-update") | .pod' | sort -u | tr '\n' ' ')
   [[ $pods == "$TNS/c3-ram $TNS/c3-ram-mem " ]] || { ok=0; notes+=("extender saw pods: $pods"); }
   local per=()
   for p in c3-ram c3-ram-mem; do
@@ -285,8 +289,8 @@ check4() {
     bnode=$(ext_log | jq -r --arg p "$TNS/$p" 'select(.msg=="bind" and .pod==$p and .ok==true) | .node' | tail -1)
     nname=$(kubectl -n "$TNS" get pod "$p" -o jsonpath='{.spec.nodeName}')
     by=$(scheduled_by "$p")
-    t_f=$(ext_log | jq -r --arg p "$TNS/$p" 'select(.msg=="filter" and .pod==$p) | .unix_ms' | head -1)
-    t_b=$(ext_log | jq -r --arg p "$TNS/$p" 'select(.msg=="bind" and .pod==$p) | .unix_ms' | tail -1)
+    t_f=$(ext_log | jq -r --arg p "$TNS/$p" 'select(.msg=="filter" and .pod==$p) | .mono_ms' | head -1)
+    t_b=$(ext_log | jq -r --arg p "$TNS/$p" 'select(.msg=="bind" and .pod==$p) | .mono_ms' | tail -1)
     per+=("$p: filter=$f prioritize=$pr bind-ok=$b node=$nname scheduledBy=$by filter->bind=$((${t_b:-0} - ${t_f:-0}))ms")
     ((f >= 1 && pr >= 1 && b == 1)) || { ok=0; notes+=("$p: extender calls filter=$f prioritize=$pr bind-ok=$b"); }
     [[ -n $bnode && $bnode == "$nname" ]] || { ok=0; notes+=("$p: bound node $nname != extender bind node $bnode"); }
@@ -302,70 +306,76 @@ check4() {
 }
 
 # ---------------------------------------------------------------- check 5
+#
+# Intervals between extender calls come from the extender's monotonic clock
+# (mono_ms), never from wall clocks of different processes.
 
-ALWAYS_INTERVALS=""
+# filter_mono <pod> [jq-condition]: mono_ms of the pod's filter calls.
+filter_mono() { ext_log | jq -r --arg p "$TNS/$1" "select(.msg==\"filter\" and .pod==\$p ${2:+and $2}) | .mono_ms"; }
+# stats: "n=<count> min/p50/max=<a>/<b>/<c> ms" of a number column.
+stats() { sort -n | awk '{v[NR]=$1} END {if (NR == 0) {print "n=0"; exit} printf "n=%d min/p50/max=%d/%d/%d ms", NR, v[1], v[int((NR+1)/2)], v[NR]}'; }
+# pod_updates_seen <pod>: pod updates the scheduler received while it was unscheduled.
+pod_updates_seen() { scheduler_logs | grep -c "Update event for unscheduled pod\" pod=\"$TNS/$1\""; }
+create_ram_pod() { pod_json "$1" "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' "$2" | kubectl create -f - >/dev/null; }
 
-check5_once() {
-  section "check 5a: extender rejects the first filter call, no intervention"
+check5a() {
+  section "check 5a: extender rejects only the first filter call; no intervention"
   local ts t1 t2 tb
-  pod_json r-once "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' '{"spike.hvmc.fax.fyi/reject-first-filters":"1"}' | kubectl create -f - >/dev/null
+  create_ram_pod r-once '{"spike.hvmc.fax.fyi/reject-first-filters":"1"}'
   if ! wait_until 120 pod_ready r-once; then
-    record FAIL 5a "pod rejected once was not Ready within 120 s; filter calls at: $(filter_ms r-once | tr '\n' ' ')"
+    record FAIL 5a "pod rejected once was not Ready within 120 s; filter calls (mono ms): $(filter_mono r-once | tr '\n' ' ')"
     return
   fi
-  ts=$(filter_ms r-once)
+  ts=$(filter_mono r-once)
   t1=$(sed -n 1p <<<"$ts")
   t2=$(sed -n 2p <<<"$ts")
-  tb=$(ext_log | jq -r --arg p "$TNS/r-once" 'select(.msg=="bind" and .pod==$p) | .unix_ms' | tail -1)
-  record PASS 5a "after the rejected first filter call the scheduler called filter again by itself after $((t2 - t1)) ms; bound $((tb - t1)) ms after the first call ($(wc -l <<<"$ts") filter calls)"
+  tb=$(ext_log | jq -r --arg p "$TNS/r-once" 'select(.msg=="bind" and .pod==$p) | .mono_ms' | tail -1)
+  record PASS 5a "second filter call $((t2 - t1)) ms after the rejected first one without intervention; bound $((tb - t1)) ms after the first call; pod updates the scheduler saw meanwhile: $(pod_updates_seen r-once) (its own PodScheduled=False write)"
 }
 
-check5_always() {
-  section "check 5b: extender rejects every filter call, observe retries for 75 s"
-  local ts n first max
-  pod_json r-always "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' '{"spike.hvmc.fax.fyi/reject-first-filters":"1000000"}' | kubectl create -f - >/dev/null
-  sleep 75
-  ts=$(filter_ms r-always)
-  kubectl -n "$TNS" delete pod r-always --wait=false >/dev/null
+# check5_park <observe-id> <patch-id> <pod> <seconds>: the extender rejects
+# with a constant reason until queue-generation >= 1. Observe without
+# intervention, then patch the annotation as the coordinator's nudge would.
+check5_park() {
+  local oid=$1 pid=$2 name=$3 secs=$4 ts n tp0 tp1 upd nxt
+  section "check $oid: constant rejection reason, no intervention for $secs s"
+  create_ram_pod "$name" '{"spike.hvmc.fax.fyi/reject-until-generation":"1"}'
+  sleep "$secs"
+  ts=$(filter_mono "$name")
   n=$(grep -c . <<<"$ts")
-  ALWAYS_INTERVALS=$(intervals <<<"$ts")
-  if ((n < 2)); then
-    record FAIL 5b "no retry without intervention within 75 s ($n filter call)"
+  record PASS "$oid" "$n filter calls in $secs s without intervention; intervals ms: $(intervals <<<"$ts"); pod updates seen by the scheduler: $(pod_updates_seen "$name")"
+
+  section "check $pid: queue-generation patch after $secs s parked"
+  has_gen1_call() { [[ -n $(filter_mono "$name" '.queueGeneration=="1"') ]]; }
+  tp0=$(now_ms)
+  kubectl -n "$TNS" annotate pod "$name" hvmc.fax.fyi/queue-generation=1 >/dev/null
+  if ! wait_until 60 has_gen1_call; then
+    record FAIL "$pid" "no filter call within 60 s after the patch"
     return
   fi
-  first=${ALWAYS_INTERVALS%%,*}
-  max=$(tr ',' '\n' <<<"$ALWAYS_INTERVALS" | sort -n | tail -1)
-  record PASS 5b "$n filter calls in 75 s without intervention; intervals ms: $ALWAYS_INTERVALS (first $first, max $max)"
+  tp1=$(now_ms)
+  upd=$(ext_log | jq -r --arg p "$TNS/$name" 'select(.msg=="pod-update" and .pod==$p and .queueGeneration=="1") | .mono_ms' | head -1)
+  nxt=$(filter_mono "$name" '.queueGeneration=="1"' | head -1)
+  wait_until 60 pod_ready "$name"
+  local text
+  text="next filter call $((nxt - ${upd:-0})) ms after the extender's informer saw the patched pod (upper bound from the script: patch command start to call visible in the log $((tp1 - tp0)) ms, incl. log polling); pod Ready: $(pod_ready "$name" && echo yes || echo no)"
+  if [[ -n $upd ]] && ((nxt - upd < 1000)); then record PASS "$pid" "$text"; else record FAIL "$pid" "$text"; fi
 }
 
-# check5_patch <id> <k>: reject until queue-generation >= 1; after the k-th
-# rejected call wait 1 s, patch the annotation, measure time to the next filter.
-check5_patch() {
-  local id=$1 k=$2 name="r-patch-$2" ts last tb ta next ref remaining text
-  section "check $id: annotation patch 1 s after rejected filter call #$k"
-  pod_json "$name" "{\"limits\":{\"$RAM\":\"1Gi\"}}" '{}' '{"spike.hvmc.fax.fyi/reject-until-generation":"1"}' | kubectl create -f - >/dev/null
-  has_k_calls() { (($(filter_ms "$name" | grep -c .) >= k)); }
-  if ! wait_until 120 has_k_calls; then
-    record FAIL "$id" "fewer than $k filter calls within 120 s: $(filter_ms "$name" | tr '\n' ' ')"
-    return
-  fi
-  last=$(filter_ms "$name" | sed -n "${k}p")
-  while (($(now_ms) < last + 1000)); do sleep 0.05; done
-  tb=$(now_ms)
-  kubectl -n "$TNS" annotate pod "$name" hvmc.fax.fyi/queue-generation=1 >/dev/null
-  ta=$(now_ms)
-  next_after() { filter_ms "$name" | awk -v t="$tb" '$1 > t' | head -1 | grep -q .; }
-  if ! wait_until 60 next_after; then
-    record FAIL "$id" "no filter call within 60 s after the patch"
-    return
-  fi
-  next=$(filter_ms "$name" | awk -v t="$tb" '$1 > t' | head -1)
-  wait_until 60 pod_ready "$name"
-  ts=$(filter_ms "$name")
-  ref=$(tr ',' '\n' <<<"$ALWAYS_INTERVALS" | sed -n "${k}p")
-  remaining=$((${ref:-0} - 1000))
-  text="patch at +1000 ms after rejected call #$k (kubectl round trip $((ta - tb)) ms) -> next filter call $((next - tb)) ms after the patch; unpatched interval after call #$k in 5b: ${ref:-n/a} ms (so ~${remaining} ms of backoff left); filter call intervals: $(intervals <<<"$ts"); pod Ready: $(pod_ready "$name" && echo yes || echo no)"
-  if ((next - tb < 1000)); then record PASS "$id" "$text"; else record FAIL "$id" "$text"; fi
+check5_volatile() {
+  section "check 5e: rejection reason that changes on every call, no intervention for 20 s"
+  local ts n
+  create_ram_pod r-volatile '{"spike.hvmc.fax.fyi/reject-first-filters":"1000000","spike.hvmc.fax.fyi/volatile-reason":"true"}'
+  sleep 20
+  ts=$(filter_mono r-volatile)
+  local seen
+  seen=$(pod_updates_seen r-volatile)
+  kubectl -n "$TNS" delete pod r-volatile --wait=false >/dev/null
+  kubectl -n "$TNS" wait --for=delete pod/r-volatile --timeout=60s >/dev/null
+  n=$(grep -c . <<<"$ts")
+  local text
+  text="$n filter calls in 20 s ($((n / 20))/s); intervals $(intervals <<<"$ts" | tr ',' '\n' | stats); pod updates seen by the scheduler: $seen (each changed reason rewrites the PodScheduled condition message, and that pod update requeues the pod)"
+  if ((n > 40)); then record FAIL 5e "$text"; else record PASS 5e "$text"; fi
 }
 
 # ---------------------------------------------------------------- check 6
@@ -424,6 +434,10 @@ finish() {
     ext_log | jq -c 'del(.time, .level)'
     echo "--- webhook calls"
     wh_log | jq -c 'del(.time, .level, .containersIn)'
+    echo "--- hvmc-scheduler queue moves of the check 5 pods (count, message, event, queue)"
+    scheduler_logs | grep 'scheduling_queue' | grep -E 'pod="spike-test/r-' |
+      sed -E 's/^[IWE][0-9]+ [0-9:.]+ +[0-9]+ [a-z_]+\.go:[0-9]+\] //; s/ schedulingCycle=[0-9]+//; s/ (hint|unschedulable plugins|attempts|backoff)=.*//' |
+      sort | uniq -c | sort -rn | head -40
     echo "--- hvmc-scheduler log (filtered)"
     scheduler_logs | grep -iE 'r-once|r-always|r-patch|c3-ram|c4-noram|forbidden|acquired|xtender|backoff|unable to schedule' | cut -c1-400 | tail -400
     echo "--- hvmc-scheduler log tail"
@@ -458,9 +472,9 @@ deploy_stubs
 check_scheduler_rbac
 check3
 check4
-check5_once
-check5_always
-check5_patch 5c 4
-check5_patch 5d 6
+check5a
+check5_park 5b 5c r-park-60 60
+check5_park 5d-pre 5d r-park-15 15
+check5_volatile
 check6
 finish

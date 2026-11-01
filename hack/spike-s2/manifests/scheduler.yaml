@@ -99,7 +99,7 @@ spec:
           command:
             - kube-scheduler
             - --config=/etc/hvmc-scheduler/config.yaml
-            - --v=4
+            - --v=5  # queue moves and their triggering events
           volumeMounts:
             - {name: config, mountPath: /etc/hvmc-scheduler, readOnly: true}
           securityContext:

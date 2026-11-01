@@ -12,7 +12,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/binding"]
     verbs: ["create"]
@@ -48,7 +48,7 @@ spec:
         - name: extender
           image: spike.local/stub-extender:dev
           imagePullPolicy: Never
-          args: ["-listen=:8888"]
+          args: ["-listen=:8888", "-watch-namespace=spike-test"]
           ports:
             - {name: http, containerPort: 8888}
           readinessProbe:
