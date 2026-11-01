@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/matfax/hvmc/hack/hyperv-characterize.schema.json",
+  "title": "hvmc spike S1: Hyper-V characterization result",
+  "description": "One run of hack/hyperv-characterize.ps1. VM name, VM ID and host name are replaced by placeholders. Documented in docs/spikes/s1-hyperv.md.",
+  "type": "object",
+  "required": [
+    "schemaVersion", "kind", "script", "run", "anonymization", "parameters", "invoker",
+    "host", "safety", "plan", "baseline", "steps", "serviceAccountProbe", "restore"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "hvmc.s1.hyperv-characterization" },
+    "script": {
+      "type": "object",
+      "required": ["path", "version"],
+      "properties": {
+        "path": { "const": "hack/hyperv-characterize.ps1" },
+        "version": { "type": "string" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["startedAt", "finishedAt", "outcome", "abortReason", "exitCode"],
+      "properties": {
+        "startedAt": { "type": "string" },
+        "finishedAt": { "type": "string" },
+        "outcome": { "enum": ["completed", "aborted", "interrupted"] },
+        "abortReason": { "type": ["string", "null"] },
+        "exitCode": { "enum": [0, 1, 3] }
+      }
+    },
+    "anonymization": {
+      "type": "object",
+      "required": ["vmName", "vmId", "hostName", "leakCheck"],
+      "properties": {
+        "vmName": { "const": "vm-under-test" },
+        "vmId": { "const": "00000000-0000-4000-8000-000000000001" },
+        "hostName": { "const": "hyperv-host" },
+        "leakCheck": { "enum": ["passed", "failed"] }
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "required": [
+        "stepBytes", "largeStepBytes", "refuseTargetBytes", "hostMarginBytes", "settleSeconds",
+        "guestCheck", "guestTimeoutSeconds", "serviceAccountProbe"
+      ],
+      "properties": {
+        "stepBytes": { "$ref": "#/$defs/bytes" },
+        "largeStepBytes": { "$ref": "#/$defs/bytes" },
+        "refuseTargetBytes": { "$ref": "#/$defs/bytes" },
+        "hostMarginBytes": { "$ref": "#/$defs/bytes" },
+        "settleSeconds": { "type": "integer", "minimum": 0 },
+        "guestCheck": { "type": "boolean" },
+        "guestTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "serviceAccountProbe": { "type": "boolean" }
+      }
+    },
+    "invoker": {
+      "type": "object",
+      "required": ["isAdministrator", "tokenHasHyperVAdministrators"],
+      "properties": {
+        "isAdministrator": { "type": "boolean" },
+        "tokenHasHyperVAdministrators": { "type": "boolean" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "required": [
+        "osCaption", "osVersion", "osBuildNumber", "psVersion", "hyperVModuleVersion",
+        "totalVisibleMemoryBytes", "freePhysicalMemoryBytes"
+      ],
+      "properties": {
+        "osCaption": { "type": "string" },
+        "osVersion": { "type": "string" },
+        "osBuildNumber": { "type": "string" },
+        "psVersion": { "type": "string" },
+        "hyperVModuleVersion": { "type": ["string", "null"] },
+        "totalVisibleMemoryBytes": { "$ref": "#/$defs/bytes" },
+        "freePhysicalMemoryBytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "safety": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed", "detail"],
+        "properties": {
+          "name": { "type": "string" },
+          "passed": { "const": true },
+          "detail": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "required": [
+        "baselineBytes", "stepBytes", "largeStepBytes", "unalignedTargetBytes",
+        "growStepTargetBytes", "growLargeTargetBytes", "refuseTargetBytes",
+        "partialShrinkMaxAttempts", "peakBytes", "plannedGrowBytes"
+      ],
+      "additionalProperties": { "type": "integer" }
+    },
+    "baseline": {
+      "type": ["object", "null"],
+      "required": ["vm", "vmMemory", "operatingSystem", "state", "guest"],
+      "properties": {
+        "vm": { "$ref": "#/$defs/shape" },
+        "vmMemory": { "$ref": "#/$defs/shape" },
+        "operatingSystem": { "$ref": "#/$defs/shape" },
+        "state": { "$ref": "#/$defs/memoryState" },
+        "guest": {
+          "type": ["object", "null"],
+          "required": ["totalBytes", "offsetBytes", "error"],
+          "properties": {
+            "totalBytes": { "type": ["integer", "null"] },
+            "offsetBytes": { "type": ["integer", "null"] },
+            "error": { "$ref": "#/$defs/errorInfoOrNull" }
+          }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "serviceAccountProbe": {
+      "type": ["object", "null"],
+      "required": [
+        "serviceName", "account", "workDir", "setup", "serviceStart", "result", "error",
+        "cleanup", "cleanupVerified"
+      ],
+      "properties": {
+        "serviceName": { "const": "hvmc-s1-probe" },
+        "account": { "const": "NT SERVICE\\hvmc-s1-probe" },
+        "workDir": { "type": "string" },
+        "setup": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+        "serviceStart": {
+          "type": ["object", "null"],
+          "required": ["exitCode", "output"],
+          "properties": {
+            "exitCode": { "type": ["integer", "null"] },
+            "output": { "type": "string" }
+          }
+        },
+        "result": {
+          "type": ["object", "null"],
+          "required": ["complete", "identity", "operations"],
+          "properties": {
+            "complete": { "type": "boolean" },
+            "psVersion": { "type": "string" },
+            "identity": {
+              "type": ["object", "null"],
+              "properties": {
+                "name": { "type": "string" },
+                "isSystem": { "type": "boolean" },
+                "isAdministrator": { "type": "boolean" },
+                "tokenHasHyperVAdministrators": { "type": "boolean" }
+              }
+            },
+            "operations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "result", "durationMs", "errors"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "result": { "enum": ["succeeded", "failed"] },
+                  "durationMs": { "type": "integer" },
+                  "summary": { "type": ["object", "null"] },
+                  "errors": { "type": "array", "items": { "$ref": "#/$defs/errorInfo" } }
+                }
+              }
+            }
+          }
+        },
+        "error": { "$ref": "#/$defs/errorInfoOrNull" },
+        "cleanup": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+        "cleanupVerified": { "type": "boolean" }
+      }
+    },
+    "restore": {
+      "type": "object",
+      "required": [
+        "originalStartupBytes", "needed", "restored", "finalStartupBytes", "finalAssignedBytes", "error"
+      ],
+      "properties": {
+        "originalStartupBytes": { "$ref": "#/$defs/bytes" },
+        "needed": { "type": ["boolean", "null"] },
+        "restored": { "type": "boolean" },
+        "finalStartupBytes": { "type": ["integer", "null"] },
+        "finalAssignedBytes": { "type": ["integer", "null"] },
+        "error": { "$ref": "#/$defs/errorInfoOrNull" }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": { "type": "integer", "minimum": 0 },
+    "memoryState": {
+      "type": "object",
+      "required": ["observedAt", "state", "status", "assignedBytes", "startupBytes", "vmMemoryStartupBytes"],
+      "properties": {
+        "observedAt": { "type": "string" },
+        "state": { "type": "string" },
+        "status": { "type": "string" },
+        "assignedBytes": { "$ref": "#/$defs/bytes" },
+        "startupBytes": { "$ref": "#/$defs/bytes" },
+        "vmMemoryStartupBytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "settled": {
+      "type": "object",
+      "required": [
+        "windowMs", "lastChangeAtMs", "changes", "state", "assignedBytes", "startupBytes",
+        "vmMemoryStartupBytes"
+      ],
+      "properties": {
+        "windowMs": { "type": "integer", "minimum": 0 },
+        "lastChangeAtMs": { "type": ["integer", "null"] },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["atMs", "assignedBytes", "startupBytes", "vmMemoryStartupBytes"]
+          }
+        },
+        "state": { "type": "string" },
+        "assignedBytes": { "$ref": "#/$defs/bytes" },
+        "startupBytes": { "$ref": "#/$defs/bytes" },
+        "vmMemoryStartupBytes": { "$ref": "#/$defs/bytes" }
+      }
+    },
+    "guestWait": {
+      "type": "object",
+      "required": [
+        "expectedTotalBytes", "toleranceBytes", "direction", "reached", "reflectedAfterMs",
+        "reflectedAfterCmdletStartMs", "finalTotalBytes", "polls", "timeoutMs", "error"
+      ],
+      "properties": {
+        "expectedTotalBytes": { "type": "integer" },
+        "toleranceBytes": { "type": "integer" },
+        "direction": { "enum": ["grow", "shrink"] },
+        "reached": { "type": "boolean" },
+        "reflectedAfterMs": { "type": ["integer", "null"] },
+        "reflectedAfterCmdletStartMs": { "type": ["integer", "null"] },
+        "finalTotalBytes": { "type": ["integer", "null"] },
+        "polls": { "type": "integer" },
+        "timeoutMs": { "type": "integer" },
+        "error": { "$ref": "#/$defs/errorInfoOrNull" }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": [
+        "index", "name", "operation", "direction", "expected", "targetBytes", "startedAt",
+        "durationMs", "result", "observed", "matchesExpectation", "startupDiverged", "before",
+        "after", "settled", "errors", "warnings", "guest"
+      ],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "name": {
+          "type": "string",
+          "pattern": "^(get-vm-missing|set-unaligned|grow-step|grow-large|shrink-to-baseline|shrink-refused|shrink-partial-[1-9]|restore-[1-9])$"
+        },
+        "operation": { "enum": ["Get-VM", "Set-VMMemory"] },
+        "direction": { "enum": ["grow", "shrink", "none"] },
+        "expected": { "enum": ["success", "refusal", "any"] },
+        "targetBytes": { "type": ["integer", "null"] },
+        "startedAt": { "type": "string" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "result": { "enum": ["succeeded", "failed"] },
+        "observed": {
+          "enum": ["applied", "succeeded-not-applied", "refused", "partially-applied", "read-ok", "read-failed"]
+        },
+        "matchesExpectation": { "type": "boolean" },
+        "startupDiverged": { "type": ["boolean", "null"] },
+        "before": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/memoryState" }] },
+        "after": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/memoryState" }] },
+        "settled": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/settled" }] },
+        "errors": { "type": "array", "items": { "$ref": "#/$defs/errorInfo" } },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "guest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/guestWait" }] }
+      }
+    },
+    "exceptionInfo": {
+      "type": "object",
+      "required": ["type", "message", "hResult", "properties"],
+      "properties": {
+        "type": { "type": "string" },
+        "message": { "type": ["string", "null"] },
+        "hResult": { "type": "integer" },
+        "properties": { "type": "object" }
+      }
+    },
+    "errorInfo": {
+      "type": "object",
+      "required": [
+        "fullyQualifiedErrorId", "exception", "innerExceptions", "category",
+        "errorDetailsMessage", "targetObjectType"
+      ],
+      "properties": {
+        "fullyQualifiedErrorId": { "type": "string" },
+        "exception": { "$ref": "#/$defs/exceptionInfo" },
+        "innerExceptions": { "type": "array", "items": { "$ref": "#/$defs/exceptionInfo" } },
+        "category": {
+          "type": "object",
+          "required": ["category", "activity", "reason", "targetName", "targetType"],
+          "properties": {
+            "category": { "type": "string" },
+            "activity": { "type": ["string", "null"] },
+            "reason": { "type": ["string", "null"] },
+            "targetName": { "type": ["string", "null"] },
+            "targetType": { "type": ["string", "null"] }
+          }
+        },
+        "errorDetailsMessage": { "type": ["string", "null"] },
+        "targetObjectType": { "type": ["string", "null"] }
+      }
+    },
+    "errorInfoOrNull": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/errorInfo" }] },
+    "action": {
+      "type": "object",
+      "required": ["action", "ok", "detail"],
+      "properties": {
+        "action": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "shape": {
+      "type": ["object", "null"],
+      "required": ["type", "psTypeNames", "properties"],
+      "properties": {
+        "type": { "type": "string" },
+        "psTypeNames": { "type": "array", "items": { "type": "string" } },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["present", "type", "value"],
+            "properties": {
+              "present": { "type": "boolean" },
+              "type": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
