@@ -50,6 +50,16 @@ test: ## Run unit and envtest tests with the race detector.
 envtest: ## Download envtest binaries and print their directory (export as KUBEBUILDER_ASSETS).
 	@$(SETUP_ENVTEST)
 
+LEDGER_COVERAGE_MIN ?= 95
+
+.PHONY: test-ledger-coverage
+test-ledger-coverage: ## Fail when internal/ledger statement coverage is below 95 %.
+	@mkdir -p $(CURDIR)/bin
+	$(GO) test -covermode=atomic -coverprofile=$(CURDIR)/bin/ledger.cover ./internal/ledger/
+	@$(GO) tool cover -func=$(CURDIR)/bin/ledger.cover | awk -v min=$(LEDGER_COVERAGE_MIN) \
+		'/^total:/ { sub("%", "", $$3); if ($$3 + 0 < min) { printf "internal/ledger coverage %s%% is below %s%%\n", $$3, min; exit 1 } \
+		printf "internal/ledger coverage %s%% (minimum %s%%)\n", $$3, min }'
+
 .PHONY: lint
 lint: lint-go lint-proto ## Run all linters.
 

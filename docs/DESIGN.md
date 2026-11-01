@@ -160,6 +160,8 @@ fits(r, vm)     = delta(r, vm) == 0  OR  pool ≥ delta(r, vm)
 
 `step` default `256Mi`; all targets are quantized to it (Hyper-V requires 2 MiB alignment; 256Mi satisfies it).
 
+Memory of an issued grow stays in `committed` (and is treated as already taken from `hostFree`) until the next host observation reports it, also after a rollback or release of that request, so two reservations never draw the same bytes.
+
 Overcommit knobs: none.
 
 ### 3.2 Locking
@@ -182,7 +184,7 @@ This sequence exists exactly once, in the **grant executor** (`internal/grant`),
 
 One queue for all requesters (pods, facade clients, reconciler grows), ordered by `priorityClass` (int, default 0, higher first) then arrival time. Pods get their queue position at their **first filter call** (§7), not at bind.
 
-Grant rule (starvation-free, no backfill in v1): requests are evaluated in queue order. Let H be the first request that does not fit. A later request may still be granted only if it draws nothing from the pool (`delta == 0`) **and** none of its candidate VMs is a candidate VM of H. Pod requests have the candidate VMs of their filter's node list; facade requests have exactly one. Reconciler grows for running workloads are queued at `priorityClass = +∞` when `reconciler.priorityOverQueue: true` (default), i.e. running workloads win over waiting ones.
+Grant rule (starvation-free, no backfill in v1): requests are evaluated in queue order, each as if every earlier request had been granted, so earlier requests use up the pool and their VMs' headroom first. A request that does not fit waits, and while it waits it **locks** its candidate VMs: no later request may take headroom on them. If at least one of its candidates is resizable (`static` or `dynamic`), it also locks the **pool**: no later request may draw from it (`delta > 0`). A waiting request whose candidates are all `fixed` cannot use the pool and therefore does not lock it. Requests that wait because of an earlier lock lock their own candidates the same way. Pod requests have the candidate VMs of their filter's node list; facade requests have exactly one. Reconciler grows for running workloads are queued at `priorityClass = +∞` when `reconciler.priorityOverQueue: true` (default), i.e. running workloads win over waiting ones.
 
 Waiting is explicit state, not a timeout; a request carries an optional `deadline` after which it turns `Failed(Timeout)`.
 
@@ -190,7 +192,7 @@ Waiting is explicit state, not a timeout; a request carries an optional `deadlin
 
 MemoryLease objects are the single source of truth (the facade and the extender both create them). On start (and on leader takeover) the ledger is rebuilt from MemoryLeases plus fresh host-agent and guest-agent data, before any front door reports ready:
 
-- `Granted`: if `assigned ≥ floor`, keep; else `Failed(Lost)` + event; never silently re-grow.
+- `Granted`: checked per VM, oldest grant first, against the static bound `base + Σ leased` (the configured `base`, not `effBase`, and no margin — a VM under normal load, with free memory below its margin, keeps its leases). A lease that still fits under `assigned` is kept; one that does not is `Failed(Lost)` + event; never silently re-grow. Without fresh VM data, Granted leases are kept.
 - `Reserved` / `Resizing`: re-read `assigned`. If it covers the lease's floor, re-run guest verification → `Granted`; otherwise drop back to `Pending` at its original queue position.
 - `Pending`: re-enqueue at original position (`status.enqueuedAt`).
 

@@ -9,6 +9,7 @@ require (
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	k8s.io/apimachinery v0.37.2
+	pgregory.net/rapid v1.3.0
 	sigs.k8s.io/controller-runtime v0.25.2
 )
 
