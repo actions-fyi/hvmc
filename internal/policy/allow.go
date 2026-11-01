@@ -145,7 +145,7 @@ func (p Policy) Allows(vm VMState, op Op, bytes int64) error {
 	if entry.Fixed {
 		return deny(ErrFixedVM, "")
 	}
-	if wantDM := op != OpSetStartup; wantDM != vm.DynamicMemory {
+	if (op != OpSetStartup) != vm.DynamicMemory {
 		return deny(ErrMemoryType, "Dynamic Memory enabled: %t", vm.DynamicMemory)
 	}
 	switch {

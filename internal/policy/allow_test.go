@@ -75,24 +75,31 @@ func TestAllows(t *testing.T) {
 				}
 				return
 			}
-			var we *WriteError
-			if !errors.As(err, &we) {
-				t.Fatalf("Allows() = %v (%T), want *WriteError", err, err)
-			}
-			if !errors.Is(err, tt.want) || !errors.Is(err, tt.class) {
-				t.Fatalf("Allows() = %v, want reason %v of class %v", err, tt.want, tt.class)
-			}
-			other := ErrPermissionDenied
-			if errors.Is(tt.class, ErrPermissionDenied) {
-				other = ErrFailedPrecondition
-			}
-			if errors.Is(err, other) {
-				t.Fatalf("Allows() = %v matches both classes", err)
-			}
-			if we.VM != tt.vm.Name || we.Op != tt.op || we.Bytes != tt.bytes || !errors.Is(we.Reason, tt.want) {
-				t.Fatalf("WriteError = %+v, want VM %q op %v bytes %d", we, tt.vm.Name, tt.op, tt.bytes)
-			}
+			checkWriteError(t, err, tt.vm.Name, tt.op, tt.bytes, tt.want, tt.class)
 		})
+	}
+}
+
+// checkWriteError asserts that err is a *WriteError for the given write,
+// with reason want, belonging to class and only to class.
+func checkWriteError(t *testing.T, err error, vm string, op Op, bytes int64, want, class error) {
+	t.Helper()
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("Allows() = %v (%T), want *WriteError", err, err)
+	}
+	if !errors.Is(err, want) || !errors.Is(err, class) {
+		t.Fatalf("Allows() = %v, want reason %v of class %v", err, want, class)
+	}
+	other := ErrPermissionDenied
+	if errors.Is(class, ErrPermissionDenied) {
+		other = ErrFailedPrecondition
+	}
+	if errors.Is(err, other) {
+		t.Fatalf("Allows() = %v matches both classes", err)
+	}
+	if we.VM != vm || we.Op != op || we.Bytes != bytes || !errors.Is(we.Reason, want) {
+		t.Fatalf("WriteError = %+v, want VM %q op %v bytes %d", we, vm, op, bytes)
 	}
 }
 
