@@ -1,4 +1,3 @@
-// Package cli holds the implementations of hvmc's subcommands.
 package cli
 
 import (
@@ -17,19 +16,10 @@ import (
 // and returns the namespace it resolved.
 type readerFactory func(kubeconfig, namespace string) (client.Reader, string, error)
 
-// NewCACommand returns the `ca` command with its `export` subcommand
-// (DESIGN §2), reading through the caller's kubeconfig.
-func NewCACommand() *cobra.Command {
-	return newCACommand(kubeReader)
-}
-
+// newCACommand returns the `ca` command with its `export` subcommand
+// (DESIGN §2); newReader connects to the cluster (kubeReader in production).
 func newCACommand(newReader readerFactory) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "ca",
-		Short: "Inspect hvmc's internal certificate authority",
-	}
-	cmd.AddCommand(newCAExportCommand(newReader))
-	return cmd
+	return group("ca", "Inspect hvmc's internal certificate authority", newCAExportCommand(newReader))
 }
 
 func newCAExportCommand(newReader readerFactory) *cobra.Command {

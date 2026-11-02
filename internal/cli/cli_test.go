@@ -34,7 +34,6 @@ func TestStubs(t *testing.T) {
 		"agent run", "agent install", "agent uninstall", "agent enroll", "agent status", "agent policy sync",
 		"check",
 		"test run", "test list", "test logs",
-		"ca export",
 		"token create",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -70,6 +69,7 @@ func TestUsage(t *testing.T) {
 		{args: []string{"agent"}, wantErr: "hvmc agent needs a subcommand"},
 		{args: []string{"agent", "bogus"}, wantErr: `unknown command "bogus" for "hvmc agent"`},
 		{args: []string{"agent", "policy"}, wantErr: "hvmc agent policy needs a subcommand"},
+		{args: []string{"ca"}, wantErr: "hvmc ca needs a subcommand"},
 		{args: []string{"version", "extra"}, wantErr: "takes no arguments"},
 		{args: []string{"serve", "--bogus"}, wantErr: "unknown flag: --bogus"},
 		{args: []string{"plan"}, wantErr: "--filename (-f) is required"},
