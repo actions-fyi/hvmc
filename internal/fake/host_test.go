@@ -12,6 +12,7 @@ import (
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
 	"github.com/matfax/hvmc/internal/fake"
+	"github.com/matfax/hvmc/internal/policy"
 )
 
 func TestGetHostAndListVMs(t *testing.T) {
@@ -26,7 +27,7 @@ func TestGetHostAndListVMs(t *testing.T) {
 		TotalBytes:   64 * gib,
 		FreeBytes:    34 * gib,
 		Agent:        &agentv1.AgentInfo{Version: fake.DefaultAgentVersion, Role: agentv1.AgentRole_AGENT_ROLE_HOST, OperatingSystem: agentv1.OperatingSystem_OPERATING_SYSTEM_WINDOWS},
-		PolicyDigest: fake.PlaceholderDigest(policyProto(sc.Policy)),
+		PolicyDigest: canonicalDigest(t, policyProto(sc.Policy)),
 		ObservedAt:   timestamp(t0),
 	}
 	if diff := cmp.Diff(want, resp.GetHost(), protocmp.Transform()); diff != "" {
@@ -134,6 +135,12 @@ func TestSetStartupErrors(t *testing.T) {
 		{name: "saved VM", vm: "vm-a", bytes: 10 * gib, want: codes.FailedPrecondition, edit: func(sc *fake.Scenario) {
 			sc.VMs[1].State, sc.VMs[1].Assigned = "Saved", ptr(fake.Bytes(0))
 		}},
+		{name: "saved VM above policy max", vm: "vm-a", bytes: 18 * gib, want: codes.FailedPrecondition, edit: func(sc *fake.Scenario) {
+			sc.VMs[1].State, sc.VMs[1].Assigned = "Saved", ptr(fake.Bytes(0))
+		}},
+		{name: "saved VM not in policy", vm: "vm-unmanaged", bytes: 6 * gib, want: codes.PermissionDenied, edit: func(sc *fake.Scenario) {
+			sc.VMs[3].State, sc.VMs[3].Assigned = "Saved", ptr(fake.Bytes(0))
+		}},
 		{name: "host out of memory", vm: "vm-a", bytes: 16 * gib, want: codes.ResourceExhausted, edit: func(sc *fake.Scenario) {
 			sc.Host.Overhead = 32 * fake.GiB // free 2Gi
 		}},
@@ -177,6 +184,7 @@ func TestSetDynamicLimits(t *testing.T) {
 		{name: "raise min", vm: "vm-dm", min: ptr(6 * gib), want: codes.FailedPrecondition},
 		{name: "min below policy", vm: "vm-dm", min: ptr(1 * gib), want: codes.PermissionDenied},
 		{name: "max above policy", vm: "vm-dm", max: ptr(32 * gib), want: codes.PermissionDenied},
+		{name: "min below policy, lower max", vm: "vm-dm", min: ptr(1 * gib), max: ptr(10 * gib), want: codes.FailedPrecondition},
 		{name: "raise max", vm: "vm-dm", max: ptr(16 * gib), want: codes.OK},
 		{name: "lower min", vm: "vm-dm", min: ptr(2 * gib), want: codes.OK},
 		{name: "same values", vm: "vm-dm", min: ptr(4 * gib), max: ptr(12 * gib), want: codes.OK},
@@ -198,6 +206,19 @@ func TestSetDynamicLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSetDynamicLimitsChecksChangedSettingsOnly: like the agent
+// (policy.Policy.Allows), the fake checks only the limits a request sets,
+// so raising the maximum works while the current minimum lies below the
+// policy's min.
+func TestSetDynamicLimitsChecksChangedSettingsOnly(t *testing.T) {
+	e := newEnv(t, func(sc *fake.Scenario) { sc.Policy.VMs[2].Min = 6 * fake.GiB })
+	ctx := testCtx(t)
+	_, err := e.host.SetDynamicLimits(ctx, &agentv1.SetDynamicLimitsRequest{VmName: "vm-dm", MaximumBytes: ptr(16 * gib)})
+	e.must(err)
+	_, err = e.host.SetDynamicLimits(ctx, &agentv1.SetDynamicLimitsRequest{VmName: "vm-dm", MinimumBytes: ptr(4 * gib)})
+	wantCode(t, err, codes.PermissionDenied)
 }
 
 func TestGrowLatency(t *testing.T) {
@@ -473,17 +494,23 @@ func TestPolicyDigestsAndProposals(t *testing.T) {
 	e := newEnv(t, nil)
 	ctx := testCtx(t)
 	active := loadTestScenario(t).Policy
-	activeDigest := fake.PlaceholderDigest(policyProto(active))
+	activeDigest := canonicalDigest(t, policyProto(active))
 
 	proposed := policyProto(active)
 	proposed.Vms = append(proposed.Vms, &agentv1.VMPolicy{Name: "vm-unmanaged", MinBytes: 2 * gib, MaxBytes: 8 * gib})
-	proposedDigest := fake.PlaceholderDigest(proposed)
+	proposedDigest := canonicalDigest(t, proposed)
 
 	_, err := e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: proposed, Digest: "not-the-digest"})
 	wantCode(t, err, codes.InvalidArgument)
-	bad := &agentv1.Policy{Vms: []*agentv1.VMPolicy{{Name: "vm-a", MinBytes: 8 * gib, MaxBytes: 4 * gib}}}
-	_, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: bad, Digest: fake.PlaceholderDigest(bad)})
-	wantCode(t, err, codes.InvalidArgument)
+	for _, bad := range []*agentv1.Policy{
+		{Vms: []*agentv1.VMPolicy{{Name: "vm-a", MinBytes: 8 * gib, MaxBytes: 4 * gib}}},
+		{Vms: []*agentv1.VMPolicy{{Name: "vm-a", Fixed: true, MaxBytes: 4 * gib}}},
+		{Vms: []*agentv1.VMPolicy{{Name: "vm-a", Fixed: true}, {Name: "vm-a", Fixed: true}}},
+		{Vms: []*agentv1.VMPolicy{{Name: "vm\na", Fixed: true}}},
+	} {
+		_, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: bad, Digest: rawDigest(bad)})
+		wantCode(t, err, codes.InvalidArgument)
+	}
 
 	resp, err := e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: proposed, Digest: proposedDigest})
 	e.must(err)
@@ -521,9 +548,20 @@ func TestPolicyDigestsAndProposals(t *testing.T) {
 	}
 	_, err = e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-unmanaged", StartupBytes: 6 * gib})
 	e.must(err)
-	if got := e.sim.CallCount("hyperv-1", "ProposePolicy"); got != 5 {
-		t.Errorf("ProposePolicy calls = %d, want 5", got)
+	if got := e.sim.CallCount("hyperv-1", "ProposePolicy"); got != 8 {
+		t.Errorf("ProposePolicy calls = %d, want 8", got)
 	}
+
+	// A missing policy is the empty policy, as for policy.FromProto.
+	empty := policy.Policy{}.Digest()
+	resp, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Digest: empty})
+	e.must(err)
+	if resp.GetPendingDigest() != empty {
+		t.Errorf("pending digest = %q, want the empty policy's %q", resp.GetPendingDigest(), empty)
+	}
+	e.must(e.sim.ActivatePendingPolicy())
+	_, err = e.host.SetStartup(ctx, &agentv1.SetStartupRequest{VmName: "vm-unmanaged", StartupBytes: 4 * gib})
+	wantCode(t, err, codes.PermissionDenied)
 }
 
 func TestPolicyDigestSkew(t *testing.T) {
@@ -532,19 +570,11 @@ func TestPolicyDigestSkew(t *testing.T) {
 	p := policyProto(loadTestScenario(t).Policy)
 	h, err := e.host.GetHost(ctx, &agentv1.GetHostRequest{})
 	e.must(err)
-	if h.GetHost().GetPolicyDigest() == fake.PlaceholderDigest(p) {
+	if h.GetHost().GetPolicyDigest() == canonicalDigest(t, p) {
 		t.Errorf("skewed agent reports the coordinator's digest")
 	}
-	_, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: p, Digest: fake.PlaceholderDigest(p)})
+	_, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: p, Digest: canonicalDigest(t, p)})
 	wantCode(t, err, codes.InvalidArgument)
-
-	// An injected digest function replaces the placeholder.
-	e = newEnv(t, nil, fake.WithPolicyDigest(func(*agentv1.Policy) string { return "custom" }))
-	h, err = e.host.GetHost(ctx, &agentv1.GetHostRequest{})
-	e.must(err)
-	if got := h.GetHost().GetPolicyDigest(); got != "custom" {
-		t.Errorf("digest = %q", got)
-	}
 }
 
 func TestRealListener(t *testing.T) {
@@ -591,6 +621,26 @@ func findVM(s *agentv1.VMSnapshot, name string) *agentv1.VM {
 		}
 	}
 	return nil
+}
+
+// canonicalDigest returns the digest the coordinator computes for p.
+func canonicalDigest(t *testing.T, p *agentv1.Policy) string {
+	t.Helper()
+	pol, err := policy.FromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pol.Digest()
+}
+
+// rawDigest returns the canonical digest of p without validating it, so an
+// invalid proposal is refused for its content and not for its digest.
+func rawDigest(p *agentv1.Policy) string {
+	pol := policy.Policy{}
+	for _, v := range p.GetVms() {
+		pol.VMs = append(pol.VMs, policy.VM{Name: v.GetName(), Fixed: v.GetFixed(), Min: v.GetMinBytes(), Max: v.GetMaxBytes()})
+	}
+	return pol.Digest()
 }
 
 func policyProto(p *fake.PolicySpec) *agentv1.Policy {
