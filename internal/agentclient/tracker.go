@@ -52,15 +52,15 @@ type Event struct {
 	Message string
 }
 
-// EventSink receives the tracker's events. Emit must not block.
-type EventSink interface {
+// EventEmitter receives the tracker's events. Emit must not block.
+type EventEmitter interface {
 	Emit(e Event)
 }
 
-// NewRecorderSink returns an EventSink that records events through rec
+// NewRecorderEmitter returns an EventEmitter that records events through rec
 // (e.g. the manager's GetEventRecorder) regarding obj, normally the
 // HostConfig.
-func NewRecorderSink(rec events.EventRecorder, regarding runtime.Object) EventSink {
+func NewRecorderEmitter(rec events.EventRecorder, regarding runtime.Object) EventEmitter {
 	return recorderSink{rec: rec, obj: regarding}
 }
 
@@ -205,7 +205,7 @@ type TrackerOptions struct {
 	Pool    *Pool
 	Ledger  LedgerSink
 	Clock   Clock
-	Events  EventSink
+	Events  EventEmitter
 	Metrics Metrics
 	// Rotator renews certificates when due; nil disables rotation.
 	Rotator *Rotator

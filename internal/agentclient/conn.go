@@ -413,12 +413,10 @@ func (c *agentConn) noConnErrLocked() error {
 func (c *agentConn) set(opts PoolOptions, ep Endpoint, target string, resolveErr error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	switch {
-	case c.cc != nil && resolveErr != nil:
-		// Keep the last good connection until the address resolves again.
-		c.ep = ep
-		return nil
-	case c.cc != nil && c.target == target && c.ep.ServerName == ep.ServerName:
+	// Keep the connection when the address does not resolve right now (the
+	// last good one stays until it does) or nothing that needs a new dial
+	// changed.
+	if c.cc != nil && (resolveErr != nil || c.target == target && c.ep.ServerName == ep.ServerName) {
 		c.ep = ep
 		return nil
 	}

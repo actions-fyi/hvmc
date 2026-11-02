@@ -93,7 +93,7 @@ func requireEnvtest(t *testing.T) {
 }
 
 // teeSink sends events to several sinks.
-type teeSink []agentclient.EventSink
+type teeSink []agentclient.EventEmitter
 
 func (s teeSink) Emit(e agentclient.Event) {
 	for _, x := range s {
@@ -189,14 +189,14 @@ func createNode(t *testing.T, name, ip string) {
 
 // apiEventSink records events through an events.k8s.io broadcaster to the
 // API server, regarding obj, as the coordinator does.
-func apiEventSink(t *testing.T, obj k8sruntime.Object) agentclient.EventSink {
+func apiEventSink(t *testing.T, obj k8sruntime.Object) agentclient.EventEmitter {
 	t.Helper()
 	cs, err := kubernetes.NewForConfig(restConfig)
 	must(t, err)
 	b := events.NewBroadcaster(&events.EventSinkImpl{Interface: cs.EventsV1()})
 	b.StartRecordingToSink(t.Context().Done())
 	t.Cleanup(b.Shutdown)
-	return agentclient.NewRecorderSink(b.NewRecorder(k8sScheme, "hvmc-coordinator"), obj)
+	return agentclient.NewRecorderEmitter(b.NewRecorder(k8sScheme, "hvmc-coordinator"), obj)
 }
 
 // wantAPIEvents waits until the API server has an event regarding the

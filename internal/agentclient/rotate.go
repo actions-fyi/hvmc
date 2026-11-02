@@ -36,7 +36,7 @@ type Rotator struct {
 	Reader client.Reader
 	// Events receives CertificateRotated / CertificateRotationFailed; nil
 	// discards them.
-	Events EventSink
+	Events EventEmitter
 }
 
 // Rotate renews the named agent's certificate through c. The CSR only
