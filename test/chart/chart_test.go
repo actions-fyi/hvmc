@@ -42,8 +42,11 @@ var cases = []struct {
 }
 
 func TestGolden(t *testing.T) {
+	// Not a line-ending issue (.gitattributes keeps LF everywhere): the test
+	// builds the pinned Helm, a large binary, only to check output that does
+	// not depend on the platform, and the chart is linux/amd64 only.
 	if runtime.GOOS == "windows" {
-		t.Skip("helm output does not depend on the platform; the Linux job runs the chart tests")
+		t.Skip("the Linux job runs the chart tests; building Helm on Windows would only repeat them")
 	}
 	// The chart itself is read in-process by chartWithNotesManifest.
 	track(t, toolsMod)

@@ -1,4 +1,3 @@
-# The chart's golden tests compare bytes: keep the chart and its golden files
-# LF on every platform.
-charts/** text eol=lf
-test/chart/testdata/** text eol=lf
+# Check every text file out with LF on all platforms. Golden test files
+# and generated code must be byte-identical on Linux and Windows runners.
+* text=auto eol=lf
