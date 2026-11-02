@@ -1,0 +1,142 @@
+{
+  "at": "2026-03-04T05:06:07Z",
+  "host": {
+    "hostAgentState": "Ready",
+    "frozen": false,
+    "capacityBytes": 68719476736,
+    "reserveBytes": 4294967296,
+    "freeBytes": 30064771072,
+    "committedBytes": 40802189312,
+    "inFlightBytes": 0,
+    "poolBytes": 23622320128
+  },
+  "vms": [
+    {
+      "name": "linux-node-1",
+      "managed": true,
+      "mode": "fixed",
+      "guestOS": "linux",
+      "state": "Ready",
+      "assignedBytes": 8589934592,
+      "startupBytes": 8589934592,
+      "observedAt": "2026-03-04T05:06:07Z",
+      "usedKnown": true,
+      "usedBytes": 2147483648,
+      "availableBytes": 6442450944,
+      "baseBytes": 3221225472,
+      "marginBytes": 2147483648,
+      "leasedBytes": 0,
+      "effBaseBytes": 3221225472,
+      "floorBytes": 5368709120,
+      "headroomBytes": 3221225472,
+      "committedBytes": 8589934592
+    },
+    {
+      "name": "vm-a",
+      "managed": true,
+      "mode": "static",
+      "guestOS": "windows",
+      "state": "Ready",
+      "assignedBytes": 8589934592,
+      "startupBytes": 8589934592,
+      "observedAt": "2026-03-04T05:06:07Z",
+      "usedKnown": true,
+      "usedBytes": 3221225472,
+      "availableBytes": 5368709120,
+      "baseBytes": 4294967296,
+      "marginBytes": 2147483648,
+      "leasedBytes": 0,
+      "effBaseBytes": 4294967296,
+      "floorBytes": 6442450944,
+      "headroomBytes": 2147483648,
+      "committedBytes": 8589934592
+    },
+    {
+      "name": "vm-b",
+      "managed": true,
+      "mode": "static",
+      "guestOS": "windows",
+      "state": "Ready",
+      "assignedBytes": 6442450944,
+      "startupBytes": 6442450944,
+      "observedAt": "2026-03-04T05:06:07Z",
+      "usedKnown": true,
+      "usedBytes": 2147483648,
+      "availableBytes": 4294967296,
+      "baseBytes": 3221225472,
+      "marginBytes": 2147483648,
+      "leasedBytes": 0,
+      "effBaseBytes": 3221225472,
+      "floorBytes": 5368709120,
+      "headroomBytes": 1073741824,
+      "committedBytes": 6442450944
+    },
+    {
+      "name": "vm-dm",
+      "managed": true,
+      "mode": "dynamic",
+      "guestOS": "windows",
+      "state": "Ready",
+      "assignedBytes": 6442450944,
+      "startupBytes": 4294967296,
+      "dynamicMemory": {
+        "minimumBytes": 4294967296,
+        "maximumBytes": 12884901888,
+        "bufferPercent": 20,
+        "priority": 0
+      },
+      "observedAt": "2026-03-04T05:06:07Z",
+      "usedKnown": true,
+      "usedBytes": 3221225472,
+      "availableBytes": 3221225472,
+      "baseBytes": 2147483648,
+      "marginBytes": 2147483648,
+      "leasedBytes": 0,
+      "effBaseBytes": 3221225472,
+      "floorBytes": 5368709120,
+      "headroomBytes": 1073741824,
+      "committedBytes": 12884901888
+    },
+    {
+      "name": "vm-unmanaged",
+      "managed": false,
+      "state": "Unmanaged",
+      "assignedBytes": 4294967296,
+      "startupBytes": 4294967296,
+      "observedAt": "2026-03-04T05:06:07Z",
+      "usedKnown": false,
+      "usedBytes": 0,
+      "availableBytes": 0,
+      "baseBytes": 0,
+      "marginBytes": 0,
+      "leasedBytes": 0,
+      "effBaseBytes": 0,
+      "floorBytes": 0,
+      "headroomBytes": 0,
+      "committedBytes": 4294967296
+    }
+  ],
+  "queue": [],
+  "agents": [
+    {
+      "name": "host",
+      "state": "Ready"
+    },
+    {
+      "name": "linux-node-1",
+      "state": "Ready"
+    },
+    {
+      "name": "vm-a",
+      "state": "Ready"
+    },
+    {
+      "name": "vm-b",
+      "state": "Ready"
+    },
+    {
+      "name": "vm-dm",
+      "state": "Ready"
+    }
+  ]
+}

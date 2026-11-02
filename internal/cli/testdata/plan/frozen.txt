@@ -1,0 +1,23 @@
+Host
+  host agent  Degraded
+  frozen      yes
+  capacity    64Gi
+  reserve     4Gi
+  committed   38Gi
+  free        28Gi
+  in flight   0
+  pool        22Gi
+
+VMs
+  NAME          MODE     STATE      ASSIGNED  USED  FLOOR  HEADROOM  COMMITTED  LEASED
+  linux-node-1  fixed    Ready      8Gi       2Gi   5Gi    3Gi       8Gi        0
+  vm-a          static   Ready      8Gi       3Gi   6Gi    2Gi       8Gi        0
+  vm-b          static   Unknown    6Gi       2Gi   5Gi    1Gi       6Gi        0
+  vm-dm         dynamic  Ready      6Gi       3Gi   5Gi    1Gi       12Gi       0
+  vm-unmanaged  -        Unmanaged  4Gi       -     -      -         4Gi        -
+
+Queue
+  POS  REQUEST    KIND      PRIORITY  BYTES  GRANTABLE  VM            FIT  DELTA  HEADROOM  POOL  REASON
+  1    request-1  External  0         1Gi    no         vm-a          no   -      -         22Gi  HostFrozen
+  2    request-2  Pod       0         2Gi    no         linux-node-1  no   -      -         22Gi  HostFrozen
+  2    request-2  Pod       0         2Gi    no         vm-a          no   -      -         22Gi  HostFrozen
