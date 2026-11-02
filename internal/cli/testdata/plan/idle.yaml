@@ -1,0 +1,40 @@
+# Idle host: every agent Ready, no requests.
+# Free: 64Gi - 4Gi overhead - (8 + 8 + 6 + 6 + 4)Gi assigned = 28Gi.
+# Committed: 8 + 8 + 6 + 12 (DM maximum) + 4 (unmanaged) = 38Gi.
+# Pool: min(64 - 4 - 38, 28 - 4) = 22Gi.
+host:
+  name: hyperv-1
+  total: 64Gi
+  overhead: 4Gi
+vms:
+  - name: linux-node-1
+    startup: 8Gi
+  - name: vm-a
+    startup: 8Gi
+  - name: vm-b
+    startup: 6Gi
+  - name: vm-dm
+    startup: 4Gi
+    assigned: 6Gi
+    dynamicMemory:
+      minimum: 4Gi
+      maximum: 12Gi
+  - name: vm-unmanaged
+    startup: 4Gi
+guests:
+  - name: linux-node-1
+    vm: linux-node-1
+    used: 2Gi
+  - name: vm-a
+    vm: vm-a
+    os: windows
+    used: 3Gi
+    pageFile: 2Gi
+  - name: vm-b
+    vm: vm-b
+    os: windows
+    used: 2Gi
+  - name: vm-dm
+    vm: vm-dm
+    os: windows
+    used: 3Gi
