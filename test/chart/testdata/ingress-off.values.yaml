@@ -1,0 +1,9 @@
+# Ingress disabled, ClusterIP facade: enrollment is not reachable from outside
+# the cluster (NOTES.txt warns).
+facade:
+  ingress:
+    enabled: false
+hostConfig:
+  agents:
+    - name: host
+      dnsName: hyperv-01.example.com

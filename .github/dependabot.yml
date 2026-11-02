@@ -21,6 +21,17 @@ updates:
       tools:
         patterns:
           - "*"
+  - package-ecosystem: pip
+    # yamllint and yamale for ct lint (hash-pinned requirements.txt).
+    directory: /hack/chart-testing
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      chart-testing:
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: /
     schedule:

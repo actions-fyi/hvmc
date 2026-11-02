@@ -9,6 +9,12 @@ BUF       := $(TOOL) buf
 # Input `buf breaking` compares against: a git ref or a directory holding the
 # old tree (CI passes an extracted copy of main).
 BUF_AGAINST ?= .git\#branch=main
+HELM      := $(TOOL) helm
+CHART     := charts/hvmc
+# Kubernetes version helm lint and helm template assume. Helm built by
+# `go tool` lacks the ldflags of Helm's release builds and would assume v1.20,
+# below the chart's kubeVersion; use the minor of the k8s.io modules instead.
+HELM_KUBE_VERSION ?= $(shell $(GO) list -m -f '{{.Version}}' k8s.io/apimachinery | sed -E 's/^v0\.([0-9]+)\.([0-9]+).*/1.\1.\2/')
 
 export CGO_ENABLED := 0
 
@@ -31,8 +37,9 @@ deepcopy: ## Generate DeepCopy methods for the API types.
 	$(TOOL) controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 .PHONY: manifests
-manifests: ## Generate CRDs into config/crd/bases.
+manifests: ## Generate CRDs into config/crd/bases and the Helm chart's templates.
 	$(TOOL) controller-gen crd paths="./api/..." output:crd:artifacts:config=config/crd/bases
+	sh hack/chart-crds.sh
 
 .PHONY: proto
 proto: ## Generate gRPC code from proto/ into internal/agentapi/ (buf).
@@ -76,8 +83,40 @@ proto-breaking: ## Check proto/ for breaking changes against BUF_AGAINST.
 	$(BUF) breaking --against '$(BUF_AGAINST)'
 
 .PHONY: helm-lint
-helm-lint: ## Lint the Helm chart (from WP 2.0).
-	@if [ -d charts/hvmc ]; then helm lint charts/hvmc; else echo "no chart yet"; fi
+helm-lint: ## Lint the Helm chart (default and ci/ values) and compare it with the golden files.
+	$(HELM) lint --strict --kube-version $(HELM_KUBE_VERSION) $(CHART)
+	@for f in $(CHART)/ci/*-values.yaml; do \
+		echo "$(HELM) lint --strict --kube-version $(HELM_KUBE_VERSION) --values $$f $(CHART)"; \
+		$(HELM) lint --strict --kube-version $(HELM_KUBE_VERSION) --values $$f $(CHART) || exit 1; \
+	done
+	$(GO) test -count=1 ./test/chart/
+
+.PHONY: helm-golden
+helm-golden: ## Regenerate the chart's golden files (test/chart/testdata).
+	$(GO) test -count=1 ./test/chart/ -update
+
+# ct runs helm, yamllint and yamale from PATH: helm is a wrapper around the
+# pinned Go tool, yamllint and yamale come hash-pinned into a virtualenv.
+CT_DIR := $(CURDIR)/bin/ct
+
+$(CT_DIR)/venv/.installed: hack/chart-testing/requirements.txt
+	rm -rf $(CT_DIR)/venv
+	python3 -m venv $(CT_DIR)/venv
+	$(CT_DIR)/venv/bin/pip install --quiet --require-hashes --no-deps -r $<
+	@touch $@
+
+.PHONY: ct-lint
+ct-lint: $(CT_DIR)/venv/.installed ## Run chart-testing lint (yamllint, yamale, helm lint) on the chart.
+	@mkdir -p $(CT_DIR)/bin
+	@printf '#!/bin/sh\nexec %s "$$@"\n' '$(HELM)' >$(CT_DIR)/bin/helm && chmod +x $(CT_DIR)/bin/helm
+	@# go list -m reports no Dir for a module that is not in the module cache
+	@# yet (a fresh CI runner), so download it first.
+	@cd tools && $(GO) mod download github.com/helm/chart-testing/v3
+	@etc="$$(cd tools && $(GO) list -m -f '{{.Dir}}' github.com/helm/chart-testing/v3)/etc" && \
+		test -f "$$etc/chart_schema.yaml" || { echo "chart-testing etc/ not found at $$etc" >&2; exit 1; }; \
+		PATH="$(CT_DIR)/bin:$(CT_DIR)/venv/bin:$$PATH" $(TOOL) ct lint --config hack/chart-testing/ct.yaml \
+			--lint-conf "$$etc/lintconf.yaml" --chart-yaml-schema "$$etc/chart_schema.yaml" \
+			--helm-lint-extra-args "--strict --kube-version $(HELM_KUBE_VERSION)"
 
 ##@ Build
 

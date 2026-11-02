@@ -1,0 +1,29 @@
+{{- $sm := .Values.metrics.serviceMonitor -}}
+{{- if $sm.enabled -}}
+# Scrapes the coordinator (hvmc-metrics) and every agent: the coordinator
+# labels the agents' Services hvmc.fax.fyi/metrics=true too (DESIGN §4.7).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hvmc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.labels" . | nindent 4 }}
+    {{- with $sm.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      hvmc.fax.fyi/metrics: "true"
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      {{- with $sm.interval }}
+      interval: {{ . }}
+      {{- end }}
+{{- end }}

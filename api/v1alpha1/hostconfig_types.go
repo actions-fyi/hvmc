@@ -160,11 +160,13 @@ type ReconcilerSpec struct {
 
 // AgentSpec declares an agent that is not tied to a VM entry.
 type AgentSpec struct {
-	// name identifies the agent in its bootstrap token Secret and in
-	// status.agents.
+	// name identifies the agent in its bootstrap token Secret
+	// (hvmc-bootstrap-<name>) and in status.agents. A DNS-1123 label, so it
+	// is used in object names as is.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
 	// role of the agent.
@@ -225,10 +227,13 @@ type GuestAgentSpec struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.policy) || self.mode in ['static', 'dynamic']",message="policy is only allowed for mode static or dynamic"
 // +kubebuilder:validation:XValidation:rule="!has(self.probe) || !self.probe || (self.guestOS == 'windows' && self.mode == 'static' && !has(self.node))",message="probe requires guestOS windows, mode static and no node"
 type VMSpec struct {
-	// name is the Hyper-V VM name.
+	// name is the Hyper-V VM name; it also names the VM's guest agent and
+	// its bootstrap token Secret (hvmc-bootstrap-<name>). A DNS-1123 label,
+	// so it is used in object names as is.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
 	// node is the Kubernetes node name of the VM. It enables the extender for

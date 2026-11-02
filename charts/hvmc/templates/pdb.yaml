@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hvmc-coordinator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "hvmc.coordinator.selectorLabels" . | nindent 6 }}

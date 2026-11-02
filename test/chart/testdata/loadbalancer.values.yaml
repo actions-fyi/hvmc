@@ -1,0 +1,21 @@
+# Facade exposed by a LoadBalancer Service instead of an Ingress.
+facade:
+  service:
+    type: LoadBalancer
+    port: 443
+    annotations:
+      service.beta.kubernetes.io/example: internal
+    loadBalancerSourceRanges:
+      - 192.0.2.0/24
+  ingress:
+    enabled: false
+hostConfig:
+  agents:
+    - name: host
+      dnsName: hyperv-01.example.com
+  vms:
+    - name: windows-node-1
+      node: windows-node-1
+      guestOS: windows
+      mode: static
+      base: 4Gi

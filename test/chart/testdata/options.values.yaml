@@ -1,0 +1,44 @@
+# Optional objects and scheduling and image overrides.
+image:
+  repository: registry.example.com/hvmc
+  tag: v1.2.3
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: Always
+imagePullSecrets:
+  - name: regcred
+replicas: 3
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+    interval: 30s
+networkPolicy:
+  enabled: false
+podAnnotations:
+  example.com/annotation: "yes"
+podLabels:
+  example.com/team: memory
+priorityClassName: system-cluster-critical
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: example.com/pool
+              operator: In
+              values: [system]
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+    ephemeral-storage: 128Mi
+  limits:
+    memory: 1Gi
+    ephemeral-storage: 512Mi

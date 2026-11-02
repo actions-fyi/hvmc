@@ -1,0 +1,48 @@
+{{- $facade := .Values.facade.service -}}
+# Leader only (DESIGN §6): agent enrollment and, later, the lease API need the
+# replica that holds the ledger and the CA.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hvmc-facade
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+  {{- with $facade.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $facade.type }}
+  {{- if and (eq $facade.type "LoadBalancer") $facade.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml $facade.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "hvmc.coordinator.selectorLabels" . | nindent 4 }}
+    {{- include "hvmc.leaderLabel" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $facade.port }}
+      targetPort: http
+      protocol: TCP
+---
+# Every replica; cluster-internal only (DESIGN §8).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hvmc-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+    # Selected by the ServiceMonitor, like the agents' Services.
+    hvmc.fax.fyi/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "hvmc.coordinator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ include "hvmc.port.metrics" . }}
+      targetPort: metrics
+      protocol: TCP

@@ -1,0 +1,32 @@
+hvmc 0.0.0-dev is installed in namespace hvmc.
+
+The coordinator runs as Deployment hvmc-coordinator (2 replicas); the
+leader carries the label hvmc.fax.fyi/leader=true.
+
+The coordinator applies HostConfig "default" from ConfigMap hvmc-hostconfig
+(values.hostConfig).
+
+1. Enrollment endpoint
+
+   http://<ingress address>/v1/enroll   (no facade.ingress.host set)
+   Ingress address: kubectl -n hvmc get ingress hvmc-facade -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+
+   WARNING: the endpoint is plain HTTP, so bootstrap tokens cross the network
+   unencrypted. Configure facade.ingress.tls.
+
+2. CA fingerprint (the same for every agent, which pins it):
+
+   kubectl -n hvmc exec deploy/hvmc-coordinator -- hvmc ca export
+
+3. Agents. Run each install command as Administrator (Windows) or root (Linux)
+   on the machine named in its heading. Replace <token> with the output of the
+   kubectl line (bootstrap tokens are single-use, valid 24 h and re-created
+   until the agent has enrolled) and <fingerprint> with the fingerprint from 2.
+
+   No agents are declared yet: add the host agent to hostConfig.agents and
+   the managed VMs to hostConfig.vms, then run helm upgrade.
+
+4. Watch the agents become Ready:
+
+   kubectl get hostconfig default --watch
+   kubectl get hostconfig default -o jsonpath='{range .status.agents[*]}{.name}{"\t"}{.state}{"\n"}{end}'

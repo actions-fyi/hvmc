@@ -85,10 +85,12 @@ spec:
                       type: string
                     name:
                       description: |-
-                        name identifies the agent in its bootstrap token Secret and in
-                        status.agents.
+                        name identifies the agent in its bootstrap token Secret
+                        (hvmc-bootstrap-<name>) and in status.agents. A DNS-1123 label, so it
+                        is used in object names as is.
                       maxLength: 63
                       minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     port:
                       default: 9443
@@ -250,9 +252,13 @@ spec:
                       - dynamic
                       type: string
                     name:
-                      description: name is the Hyper-V VM name.
-                      maxLength: 253
+                      description: |-
+                        name is the Hyper-V VM name; it also names the VM's guest agent and
+                        its bootstrap token Secret (hvmc-bootstrap-<name>). A DNS-1123 label,
+                        so it is used in object names as is.
+                      maxLength: 63
                       minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     node:
                       description: |-

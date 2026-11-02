@@ -1,0 +1,477 @@
+---
+# Source: hvmc/templates/networkpolicy.yaml
+# Coordinator egress (DESIGN §11): API server, DNS, agents' gRPC port. Agents
+# run outside the cluster at addresses only HostConfig knows, so the agent
+# rule allows any destination on those ports; mTLS protects them (§4.5).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-coordinator-egress
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hvmc
+      app.kubernetes.io/instance: hvmc
+      app.kubernetes.io/component: coordinator
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 9443
+---
+# Source: hvmc/templates/networkpolicy.yaml
+# The facade port: from the ingress controller's namespaces, or from anywhere
+# when a LoadBalancer Service exposes it (client addresses are external).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-facade-ingress
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hvmc
+      app.kubernetes.io/instance: hvmc
+      app.kubernetes.io/component: coordinator
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: http
+      from:
+        - namespaceSelector: {}
+---
+# Source: hvmc/templates/networkpolicy.yaml
+# The metrics port, for Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-metrics-ingress
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hvmc
+      app.kubernetes.io/instance: hvmc
+      app.kubernetes.io/component: coordinator
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: metrics
+      from:
+        - namespaceSelector: {}
+---
+# Source: hvmc/templates/pdb.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hvmc-coordinator
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hvmc
+      app.kubernetes.io/instance: hvmc
+      app.kubernetes.io/component: coordinator
+---
+# Source: hvmc/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hvmc-coordinator
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+# Mounted explicitly by the coordinator pod only.
+automountServiceAccountToken: false
+---
+# Source: hvmc/templates/hostconfig.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hvmc-hostconfig
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+data:
+  hostconfig.yaml: |
+    apiVersion: hvmc.fax.fyi/v1alpha1
+    kind: HostConfig
+    metadata:
+      name: default
+      labels:
+        app.kubernetes.io/name: hvmc
+        app.kubernetes.io/part-of: hvmc
+    spec:
+      agents:
+      - dnsName: hyperv-01.example.com
+        name: host
+      capacity: 0
+      defaultMargin: 2Gi
+      dmAccounting: maximum
+      reserve: 4Gi
+      staleAfter: 30s
+      step: 256Mi
+      vms: []
+---
+# Source: hvmc/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hvmc-coordinator
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+rules:
+  # Node InternalIP is the address of node-mapped guest agents (DESIGN §4.7).
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  # Events about cluster-scoped objects (HostConfig, Nodes) are recorded in the
+  # "default" namespace; patch lets the recorder aggregate repeated events.
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  # Finalizers: owner references with blockOwnerDeletion to HostConfig
+  # (DESIGN §11 cleanup).
+  - apiGroups: [hvmc.fax.fyi]
+    resources:
+      - hostconfigs
+      - hostconfigs/status
+      - hostconfigs/finalizers
+      - memoryleases
+      - memoryleases/status
+      - memoryleases/finalizers
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+# Source: hvmc/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hvmc-coordinator
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hvmc-coordinator
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-coordinator
+    namespace: hvmc
+---
+# Source: hvmc/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hvmc-coordinator
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+rules:
+  # Agent service entries (DESIGN §4.7), hvmc-ca, bootstrap tokens,
+  # hvmc-ca-bundle and the chart-rendered hvmc-hostconfig (DESIGN §4.6, §5).
+  - apiGroups: [""]
+    resources: [services, secrets, configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The leader labels its own pod hvmc.fax.fyi/leader=true (DESIGN §6).
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch]
+  # Leader election (DESIGN §6).
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch]
+---
+# Source: hvmc/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hvmc-coordinator
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hvmc-coordinator
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-coordinator
+    namespace: hvmc
+---
+# Source: hvmc/templates/services.yaml
+# Leader only (DESIGN §6): agent enrollment and, later, the lease API need the
+# replica that holds the ledger and the CA.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hvmc-facade
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/component: coordinator
+    hvmc.fax.fyi/leader: "true"
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+# Source: hvmc/templates/services.yaml
+# Every replica; cluster-internal only (DESIGN §8).
+apiVersion: v1
+kind: Service
+metadata:
+  name: hvmc-metrics
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+    # Selected by the ServiceMonitor, like the agents' Services.
+    hvmc.fax.fyi/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/component: coordinator
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+---
+# Source: hvmc/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hvmc-coordinator
+  namespace: hvmc
+  labels:
+    helm.sh/chart: hvmc-0.0.0-dev
+    app.kubernetes.io/name: hvmc
+    app.kubernetes.io/instance: hvmc
+    app.kubernetes.io/version: "0.0.0-dev"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hvmc
+    app.kubernetes.io/component: coordinator
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hvmc
+      app.kubernetes.io/instance: hvmc
+      app.kubernetes.io/component: coordinator
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: hvmc-0.0.0-dev
+        app.kubernetes.io/name: hvmc
+        app.kubernetes.io/instance: hvmc
+        app.kubernetes.io/version: "0.0.0-dev"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/part-of: hvmc
+        app.kubernetes.io/component: coordinator
+    spec:
+      serviceAccountName: hvmc-coordinator
+      # The ServiceAccount disables automounting; the coordinator is the one
+      # pod that needs its token (API server access).
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: coordinator
+          image: docker.io/matfax/hvmc:0.0.0-dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --leader-elect=true
+            - --http-bind-address=:8080
+            - --metrics-bind-address=:9090
+            - --health-probe-bind-address=:8081
+            - --hostconfig-configmap=hvmc-hostconfig
+          env:
+            # The leader labels its own pod (DESIGN §6).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          # Readiness is "process up and serving" on every replica, never
+          # agent health or leadership (DESIGN §4.8, §6).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "1"
+              ephemeral-storage: 256Mi
+              memory: 512Mi
+            requests:
+              cpu: 50m
+              ephemeral-storage: 64Mi
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      # The image is linux/amd64 only; clusters with Windows nodes are the
+      # normal case for hvmc.
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        kubernetes.io/os: linux
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: hvmc
+                    app.kubernetes.io/instance: hvmc
+                    app.kubernetes.io/component: coordinator

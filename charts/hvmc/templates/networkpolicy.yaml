@@ -1,0 +1,90 @@
+{{- $np := .Values.networkPolicy -}}
+{{- if $np.enabled -}}
+# Coordinator egress (DESIGN §11): API server, DNS, agents' gRPC port. Agents
+# run outside the cluster at addresses only HostConfig knows, so the agent
+# rule allows any destination on those ports; mTLS protects them (§4.5).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-coordinator-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hvmc.coordinator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        {{- range $np.apiServer.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+      {{- with $np.apiServer.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+      {{- with $np.dns.to }}
+      to:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    - ports:
+        {{- range include "hvmc.agentPorts" . | fromJsonArray }}
+        - protocol: TCP
+          port: {{ . | int }}
+        {{- end }}
+---
+# The facade port: from the ingress controller's namespaces, or from anywhere
+# when a LoadBalancer Service exposes it (client addresses are external).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-facade-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hvmc.coordinator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: http
+      {{- if ne .Values.facade.service.type "LoadBalancer" }}
+      from:
+        - namespaceSelector:
+          {{- with $np.ingressControllerNamespaceSelector }}{{ toYaml . | nindent 12 }}{{ else }} {}{{ end }}
+      {{- end }}
+---
+# The metrics port, for Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hvmc-metrics-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hvmc.coordinator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: metrics
+      from:
+        - namespaceSelector:
+          {{- with $np.metricsNamespaceSelector }}{{ toYaml . | nindent 12 }}{{ else }} {}{{ end }}
+{{- end }}
