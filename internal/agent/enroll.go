@@ -37,12 +37,12 @@ import (
 //
 // Trust: the token must not reach anyone but the coordinator, so the URL
 // must be https and redirects are never followed. The endpoint's TLS
-// certificate is accepted when it verifies against the system roots (an
-// Ingress certificate) or against the pinned CA, when that CA is part of
-// the presented chain (a certificate issued by the hvmc CA). Independently,
-// nothing in the response is used before its CA certificate matches the
-// pinned SHA-256 fingerprint; the returned leaf must then chain to that CA
-// as a serving certificate and carry the agent's own key.
+// certificate is verified the standard way against the system roots: the
+// endpoint is the Ingress or a TLS-terminating load balancer (DESIGN §8),
+// never served with an hvmc CA certificate. Independently, nothing in the
+// response is used before its CA certificate matches the pinned SHA-256
+// fingerprint; the returned leaf must then chain to that CA as a serving
+// certificate and carry the agent's own key.
 
 // EnrollOptions configure Enroll.
 type EnrollOptions struct {
@@ -58,8 +58,8 @@ type EnrollOptions struct {
 	Agent string
 	// Role is host or guest.
 	Role Role
-	// RootCAs verify the endpoint's TLS certificate besides the pinned CA;
-	// nil means the system roots.
+	// RootCAs verify the endpoint's TLS certificate; nil means the system
+	// roots.
 	RootCAs *x509.CertPool
 	// Now is the time source for certificate validity; nil means the
 	// system clock.
@@ -159,7 +159,7 @@ func Enroll(ctx context.Context, o EnrollOptions) (*Enrollment, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create CSR: %w", err)
 	}
-	resp, err := postEnroll(ctx, o, u, pin, pki.EnrollRequest{
+	resp, err := postEnroll(ctx, o, u, pki.EnrollRequest{
 		Agent: o.Agent,
 		Role:  string(o.Role),
 		CSR:   string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr})),
@@ -194,7 +194,7 @@ func checkEnrollOptions(o EnrollOptions) (*url.URL, string, error) {
 	return u, pin, nil
 }
 
-func postEnroll(ctx context.Context, o EnrollOptions, u *url.URL, pin string, body pki.EnrollRequest) (*pki.EnrollResponse, error) {
+func postEnroll(ctx context.Context, o EnrollOptions, u *url.URL, body pki.EnrollRequest) (*pki.EnrollResponse, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -209,7 +209,7 @@ func postEnroll(ctx context.Context, o EnrollOptions, u *url.URL, pin string, bo
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy:           http.ProxyFromEnvironment,
-			TLSClientConfig: enrollTLSConfig(o, u.Hostname(), pin),
+			TLSClientConfig: enrollTLSConfig(o),
 		},
 		// Never follow a redirect: it would carry the token elsewhere.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -243,45 +243,10 @@ func errorMessage(body []byte) string {
 	return strings.TrimSpace(string(body))
 }
 
-// enrollTLSConfig verifies the endpoint itself (see the trust notes above):
-// Go's default verification is replaced, not skipped, because a
-// certificate issued by the pinned CA must be accepted as well.
-func enrollTLSConfig(o EnrollOptions, host, pin string) *tls.Config {
-	return &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		Time:               o.Now,
-		InsecureSkipVerify: true, //nolint:gosec // G402: VerifyConnection below performs the full verification.
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyEnrollServer(cs.PeerCertificates, host, o.RootCAs, pin, o.Now())
-		},
-	}
-}
-
-func verifyEnrollServer(certs []*x509.Certificate, host string, roots *x509.CertPool, pin string, now time.Time) error {
-	if len(certs) == 0 {
-		return errors.New("enrollment server sent no certificate")
-	}
-	inter := x509.NewCertPool()
-	for _, c := range certs[1:] {
-		inter.AddCert(c)
-	}
-	opts := x509.VerifyOptions{DNSName: host, Roots: roots, Intermediates: inter, CurrentTime: now}
-	_, sysErr := certs[0].Verify(opts)
-	if sysErr == nil {
-		return nil
-	}
-	for _, c := range certs {
-		if pki.Fingerprint(c) != pin {
-			continue
-		}
-		pinned := x509.NewCertPool()
-		pinned.AddCert(c)
-		opts.Roots = pinned
-		if _, err := certs[0].Verify(opts); err == nil {
-			return nil
-		}
-	}
-	return fmt.Errorf("enrollment server certificate is neither trusted nor issued by the pinned CA: %w", sysErr)
+// enrollTLSConfig verifies the endpoint with Go's standard verification
+// against RootCAs (nil: the system roots).
+func enrollTLSConfig(o EnrollOptions) *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: o.RootCAs, Time: o.Now}
 }
 
 // verifyEnrollment checks a response: first the CA against the pin, then

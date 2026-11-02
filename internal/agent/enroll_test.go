@@ -118,6 +118,9 @@ func (es *enrollServer) options(agent string, role Role) EnrollOptions {
 	return EnrollOptions{
 		Server: es.srv.URL + pki.EnrollPath, Token: testToken, CASHA256: pki.Fingerprint(es.ca.cert),
 		Agent: agent, Role: role, Now: newTestClock().Now,
+		// The test endpoint's certificate comes from the test CA, which
+		// stands in for an Ingress certificate trusted by the system roots.
+		RootCAs: es.ca.pool,
 	}
 }
 
@@ -299,12 +302,13 @@ func TestEnrollEndpointTrust(t *testing.T) {
 	es := newEnrollServer(t)
 	other := newTestCA(t)
 
-	// Pinned to another CA, the endpoint (issued by the hvmc CA, not in
-	// the roots) is not trusted: the token is never sent.
+	// An endpoint the roots do not trust is refused, even when its
+	// certificate comes from the pinned CA: the token is never sent.
 	o := es.options("host", RoleHost)
-	o.CASHA256 = pki.Fingerprint(other.cert)
-	if _, err := enroll(t, o); err == nil || !strings.Contains(err.Error(), "neither trusted nor issued by the pinned CA") {
-		t.Errorf("untrusted endpoint: %v", err)
+	o.RootCAs = other.pool
+	var unknown x509.UnknownAuthorityError
+	if _, err := enroll(t, o); !errors.As(err, &unknown) {
+		t.Errorf("untrusted endpoint: %v, want x509.UnknownAuthorityError", err)
 	}
 	es.mu.Lock()
 	sent := es.headers
@@ -316,6 +320,7 @@ func TestEnrollEndpointTrust(t *testing.T) {
 	// Trusted through the roots (an Ingress certificate), the response's
 	// CA must still match the pin.
 	o.RootCAs = es.ca.pool
+	o.CASHA256 = pki.Fingerprint(other.cert)
 	if _, err := enroll(t, o); !errors.Is(err, ErrCAPinMismatch) {
 		t.Errorf("trusted endpoint, wrong pin: %v, want ErrCAPinMismatch", err)
 	}

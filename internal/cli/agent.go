@@ -55,7 +55,7 @@ func newAgentEnrollCommand(e env) *cobra.Command {
 }
 
 func runAgentEnroll(cmd *cobra.Command, e env) error {
-	o := agent.EnrollOptions{Now: e.now}
+	o := agent.EnrollOptions{Now: e.now, RootCAs: e.rootCAs}
 	for _, f := range []struct {
 		name string
 		dst  *string

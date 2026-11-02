@@ -25,10 +25,11 @@ func (fixedClock) Now() time.Time { return testNow }
 
 const cliToken = "tok-123"
 
-// newEnrollEndpoint serves /v1/enroll like the coordinator, with a TLS
-// certificate from the same CA, and returns its URL and the CA
-// fingerprint.
-func newEnrollEndpoint(t *testing.T, status int) (url, fingerprint string) {
+// newEnrollEndpoint serves /v1/enroll like the coordinator. Its TLS
+// certificate comes from the same CA, which the returned env trusts in place
+// of the system roots (an Ingress certificate). It returns the URL, the CA
+// fingerprint and that env.
+func newEnrollEndpoint(t *testing.T, status int) (url, fingerprint string, e env) {
 	t.Helper()
 	ca, err := pki.GenerateCA(pki.WithClock(fixedClock{}))
 	if err != nil {
@@ -64,14 +65,14 @@ func newEnrollEndpoint(t *testing.T, status int) (url, fingerprint string) {
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{*kp.TLSCertificate()}, MinVersion: tls.VersionTLS12}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	return srv.URL + pki.EnrollPath, ca.Fingerprint()
+	return srv.URL + pki.EnrollPath, ca.Fingerprint(), env{now: func() time.Time { return testNow }, rootCAs: ca.Pool()}
 }
 
 func TestAgentEnroll(t *testing.T) {
-	url, fp := newEnrollEndpoint(t, http.StatusOK)
+	url, fp, e := newEnrollEndpoint(t, http.StatusOK)
 	dir := t.TempDir()
 	cfgPath, state := filepath.Join(dir, "etc", "agent.yaml"), filepath.Join(dir, "state")
-	code, out, errOut := runCLI(t, "agent", "enroll", "--enroll", url, "--token", cliToken, "--ca-sha256", fp,
+	code, out, errOut := runCLIEnv(t, e, "agent", "enroll", "--enroll", url, "--token", cliToken, "--ca-sha256", fp,
 		"--agent", "host", "--role", "host", "--config", cfgPath, "--state-dir", state)
 	if code != ExitOK {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
@@ -93,9 +94,9 @@ func TestAgentEnroll(t *testing.T) {
 }
 
 func TestAgentEnrollRefused(t *testing.T) {
-	url, fp := newEnrollEndpoint(t, http.StatusUnauthorized)
+	url, fp, e := newEnrollEndpoint(t, http.StatusUnauthorized)
 	dir := t.TempDir()
-	code, _, errOut := runCLI(t, "agent", "enroll", "--enroll", url, "--token", "wrong", "--ca-sha256", fp,
+	code, _, errOut := runCLIEnv(t, e, "agent", "enroll", "--enroll", url, "--token", "wrong", "--ca-sha256", fp,
 		"--agent", "host", "--role", "host", "--config", filepath.Join(dir, "agent.yaml"), "--state-dir", dir)
 	if code != ExitFailure || !strings.Contains(errOut, "401 Unauthorized: token refused") {
 		t.Errorf("exit %d, stderr %q", code, errOut)
