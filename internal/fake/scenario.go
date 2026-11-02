@@ -123,10 +123,10 @@ type HostSpec struct {
 	// RPCs fail with UNAVAILABLE, WatchVMs streams end, health reports
 	// NOT_SERVING.
 	VMMSDown bool `json:"vmmsDown,omitempty"`
-	// PolicyDigestSkew makes the agent's digest function disagree with the
-	// configured one (a canonicalization difference between versions): the
-	// reported digests never match and every proposal is refused with
-	// INVALID_ARGUMENT.
+	// PolicyDigestSkew makes the agent's digest disagree with the canonical
+	// one of internal/policy (a canonicalization difference between agent
+	// and coordinator versions): the reported digests never match and every
+	// proposal is refused with INVALID_ARGUMENT.
 	PolicyDigestSkew bool `json:"policyDigestSkew,omitempty"`
 
 	AgentBehaviour `json:",inline"`
@@ -411,7 +411,7 @@ func (sc *Scenario) validatePolicies(p *problems) {
 		if pol.p == nil {
 			continue
 		}
-		if err := validatePolicy(toProtoPolicy(pol.p)); err != nil {
+		if err := pol.p.toPolicy().Validate(); err != nil {
 			p.check(true, "%s: %w", pol.field, err)
 		}
 	}

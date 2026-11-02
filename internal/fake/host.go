@@ -10,16 +10,20 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
+	"github.com/matfax/hvmc/internal/policy"
 )
 
 // hostServer implements agentv1.HostAgentServer on a Sim.
 //
 // Write checks run in this order, each failing with the code of the error
 // model (common.proto): request shape (INVALID_ARGUMENT), hang, vmms
-// (UNAVAILABLE), VM lookup (NOT_FOUND), policy membership
-// (PERMISSION_DENIED), fixed VM and VM mode/state (FAILED_PRECONDITION), DM
-// direction (FAILED_PRECONDITION), policy bounds (PERMISSION_DENIED), host
-// free memory (RESOURCE_EXHAUSTED), guest refusal (ABORTED).
+// (UNAVAILABLE), VM lookup (NOT_FOUND), DM minimum above maximum
+// (INVALID_ARGUMENT), then the active policy's rules as a real agent applies
+// them (policy.Policy.Allows: membership PERMISSION_DENIED, fixed VM and
+// memory type FAILED_PRECONDITION, DM direction FAILED_PRECONDITION), the VM
+// state (FAILED_PRECONDITION; not a policy rule), the policy bounds
+// (PERMISSION_DENIED), host free memory (RESOURCE_EXHAUSTED), guest refusal
+// (ABORTED).
 type hostServer struct {
 	agentv1.UnimplementedHostAgentServer
 	sim  *Sim
@@ -133,25 +137,37 @@ func (s *Sim) acquireWrite(ctx context.Context) error {
 
 func (s *Sim) releaseWrite() { <-s.writeSem }
 
-// writableLocked looks up a VM for a write and applies the policy checks
-// shared by both write RPCs.
-func (h *hostServer) writableLocked(name string) (*VMSpec, VMPolicySpec, error) {
-	s := h.sim
+// vmForWriteLocked looks up the VM a write is for.
+func (h *hostServer) vmForWriteLocked(name string) (*VMSpec, error) {
 	if err := h.unavailableLocked(); err != nil {
-		return nil, VMPolicySpec{}, err
+		return nil, err
 	}
-	v := s.sc.vm(name)
+	v := h.sim.sc.vm(name)
 	if v == nil {
-		return nil, VMPolicySpec{}, status.Errorf(codes.NotFound, "VM %q does not exist on host %s", name, h.name)
+		return nil, status.Errorf(codes.NotFound, "VM %q does not exist on host %s", name, h.name)
 	}
-	rule, ok := s.sc.Policy.rule(name)
-	if !ok {
-		return nil, VMPolicySpec{}, status.Errorf(codes.PermissionDenied, "VM %q is not in the active policy", name)
+	return v, nil
+}
+
+// policyWrite is one setting a write RPC changes, checked against the
+// policy as its own operation.
+type policyWrite struct {
+	op    policy.Op
+	bytes Bytes
+}
+
+// allowLocked checks writes to v against the active policy with
+// policy.Policy.Allows, as the agent does. vmErr is a refusal of the VM's
+// state that the policy package does not cover; it ranks after the policy's
+// own refusals except its bounds (firstRefusal).
+func (h *hostServer) allowLocked(v *VMSpec, vmErr error, writes ...policyWrite) error {
+	pol := h.sim.sc.Policy.toPolicy()
+	st := vmState(v)
+	errs := make([]error, 0, len(writes)+1)
+	for _, w := range writes {
+		errs = append(errs, pol.Allows(st, w.op, int64(w.bytes)))
 	}
-	if rule.Fixed {
-		return nil, VMPolicySpec{}, status.Errorf(codes.FailedPrecondition, "VM %q is fixed (read-only to the agent)", name)
-	}
-	return v, rule, nil
+	return refusalStatus(firstRefusal(append(errs, vmErr)...))
 }
 
 // SetStartup implements agentv1.HostAgentServer.
@@ -237,18 +253,16 @@ func (h *hostServer) applyStartup(name string, n Bytes) (*agentv1.ResizeResult, 
 // startupTargetLocked returns the VM a SetStartup may change, or the error
 // that refuses it.
 func (h *hostServer) startupTargetLocked(name string, n Bytes) (*VMSpec, error) {
-	v, rule, err := h.writableLocked(name)
+	v, err := h.vmForWriteLocked(name)
 	if err != nil {
 		return nil, err
 	}
-	if v.DynamicMemory != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "VM %q uses Dynamic Memory; use SetDynamicLimits", name)
-	}
+	var stateErr error
 	if state := coarseState(v.State); state != agentv1.VMState_VM_STATE_RUNNING && state != agentv1.VMState_VM_STATE_OFF {
-		return nil, status.Errorf(codes.FailedPrecondition, "VM %q is %s; memory can only be changed while running or off", name, v.State)
+		stateErr = status.Errorf(codes.FailedPrecondition, "VM %q is %s; memory can only be changed while running or off", name, v.State)
 	}
-	if n < rule.Min || n > rule.Max {
-		return nil, status.Errorf(codes.PermissionDenied, "startup %s for VM %q is outside the policy's [%s, %s]", n, name, rule.Min, rule.Max)
+	if err := h.allowLocked(v, stateErr, policyWrite{op: policy.OpSetStartup, bytes: n}); err != nil {
+		return nil, err
 	}
 	return v, nil
 }
@@ -336,27 +350,19 @@ func (h *hostServer) SetDynamicLimits(ctx context.Context, req *agentv1.SetDynam
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	name := req.GetVmName()
-	v, rule, err := h.writableLocked(name)
+	v, err := h.vmForWriteLocked(req.GetVmName())
 	if err != nil {
 		return nil, err
 	}
-	dm := v.DynamicMemory
-	if dm == nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "VM %q uses static memory; use SetStartup", name)
+	if err := checkDynamicOrder(v, req); err != nil {
+		return nil, err
 	}
-	newMin, newMax := dm.Minimum, dm.Maximum
-	if req.MinimumBytes != nil {
-		newMin = Bytes(req.GetMinimumBytes())
-	}
-	if req.MaximumBytes != nil {
-		newMax = Bytes(req.GetMaximumBytes())
-	}
-	if err := checkDynamicLimits(name, dm, rule, newMin, newMax); err != nil {
+	if err := h.allowLocked(v, nil, dynamicWrites(req)...); err != nil {
 		return nil, err
 	}
 	before := vmMessage(v, s.clock.Now())
-	dm.Minimum, dm.Maximum = newMin, newMax
+	dm := v.DynamicMemory
+	dm.Minimum, dm.Maximum = dynamicLimits(dm, req)
 	after := vmMessage(v, s.clock.Now())
 	s.changedLocked()
 	return &agentv1.SetDynamicLimitsResponse{Result: &agentv1.ResizeResult{Before: before, After: after}}, nil
@@ -385,22 +391,43 @@ func validateDynamicLimitsRequest(req *agentv1.SetDynamicLimitsRequest) error {
 	return nil
 }
 
-// checkDynamicLimits applies the DM direction rules and the policy bounds
-// to the requested limits.
-func checkDynamicLimits(name string, dm *DynamicMemorySpec, rule VMPolicySpec, newMin, newMax Bytes) error {
-	switch {
-	case newMin > newMax:
-		return status.Errorf(codes.InvalidArgument, "minimum %s would be above maximum %s", newMin, newMax)
-	case newMax < dm.Maximum:
-		return status.Errorf(codes.FailedPrecondition, "Dynamic Memory maximum of VM %q may only be raised (current %s, requested %s)", name, dm.Maximum, newMax)
-	case newMin > dm.Minimum:
-		return status.Errorf(codes.FailedPrecondition, "Dynamic Memory minimum of VM %q may only be lowered (current %s, requested %s)", name, dm.Minimum, newMin)
-	case newMin < rule.Min:
-		return status.Errorf(codes.PermissionDenied, "minimum %s for VM %q is below the policy's min %s", newMin, name, rule.Min)
-	case newMax > rule.Max:
-		return status.Errorf(codes.PermissionDenied, "maximum %s for VM %q is above the policy's max %s", newMax, name, rule.Max)
+// dynamicLimits returns the DM limits of dm after req.
+func dynamicLimits(dm *DynamicMemorySpec, req *agentv1.SetDynamicLimitsRequest) (newMin, newMax Bytes) {
+	newMin, newMax = dm.Minimum, dm.Maximum
+	if req.MinimumBytes != nil {
+		newMin = Bytes(req.GetMinimumBytes())
+	}
+	if req.MaximumBytes != nil {
+		newMax = Bytes(req.GetMaximumBytes())
+	}
+	return newMin, newMax
+}
+
+// checkDynamicOrder refuses a request that would leave the DM minimum of v
+// above its maximum (INVALID_ARGUMENT). Like the rest of the request
+// validation it runs before the policy check; a static-memory VM has no
+// limits to compare and is refused by the policy check instead.
+func checkDynamicOrder(v *VMSpec, req *agentv1.SetDynamicLimitsRequest) error {
+	if v.DynamicMemory == nil {
+		return nil
+	}
+	if newMin, newMax := dynamicLimits(v.DynamicMemory, req); newMin > newMax {
+		return status.Errorf(codes.InvalidArgument, "minimum %s of VM %q would be above maximum %s", newMin, v.Name, newMax)
 	}
 	return nil
+}
+
+// dynamicWrites returns the settings a SetDynamicLimits request changes;
+// each is checked against the policy as its own operation.
+func dynamicWrites(req *agentv1.SetDynamicLimitsRequest) []policyWrite {
+	var writes []policyWrite
+	if req.MinimumBytes != nil {
+		writes = append(writes, policyWrite{op: policy.OpSetDynamicMinimum, bytes: Bytes(req.GetMinimumBytes())})
+	}
+	if req.MaximumBytes != nil {
+		writes = append(writes, policyWrite{op: policy.OpSetDynamicMaximum, bytes: Bytes(req.GetMaximumBytes())})
+	}
+	return writes
 }
 
 // ProposePolicy implements agentv1.HostAgentServer.
@@ -409,21 +436,27 @@ func (h *hostServer) ProposePolicy(ctx context.Context, req *agentv1.ProposePoli
 	if err := s.enter(ctx, h.name, "ProposePolicy", false); err != nil {
 		return nil, err
 	}
-	if err := validatePolicy(req.GetPolicy()); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid policy: %v", err)
+	// An unset policy field is a caller bug, not a request to manage no VM;
+	// that takes an explicit empty Policy message (policy.proto).
+	if req.GetPolicy() == nil {
+		return nil, status.Error(codes.InvalidArgument, "policy is required")
+	}
+	pol, err := policy.FromProto(req.GetPolicy())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	digest := s.digestLocked(req.GetPolicy())
+	digest := s.digestLocked(pol)
 	if req.GetDigest() != digest {
 		return nil, status.Errorf(codes.InvalidArgument, "digest mismatch: request says %q, agent computes %q", req.GetDigest(), digest)
 	}
-	active := s.digestLocked(toProtoPolicy(s.sc.Policy))
+	active := s.digestLocked(s.sc.Policy.toPolicy())
 	resp := &agentv1.ProposePolicyResponse{ActiveDigest: active}
 	if digest == active {
 		s.sc.PendingPolicy = nil
 	} else {
-		s.sc.PendingPolicy = fromProtoPolicy(req.GetPolicy())
+		s.sc.PendingPolicy = fromPolicy(pol)
 		resp.PendingDigest = digest
 	}
 	s.changedLocked()

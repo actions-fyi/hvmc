@@ -166,7 +166,8 @@ func (x *VMPolicy) GetMaxBytes() int64 {
 // HostConfig.
 type ProposePolicyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The proposed policy.
+	// The proposed policy. Required: the agent refuses a request without it
+	// with INVALID_ARGUMENT. An explicit empty Policy manages no VM.
 	Policy *Policy `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
 	// Digest of `policy` as computed by the coordinator (internal/policy). The
 	// agent recomputes it and refuses the proposal with INVALID_ARGUMENT on a
