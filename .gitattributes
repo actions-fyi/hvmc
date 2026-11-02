@@ -1,0 +1,4 @@
+# The chart's golden tests compare bytes: keep the chart and its golden files
+# LF on every platform.
+charts/** text eol=lf
+test/chart/testdata/** text eol=lf

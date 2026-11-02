@@ -1,0 +1,23 @@
+apiVersion: v2
+name: hvmc
+description: >-
+  Hyper-V Memory Coordinator: one RAM ledger for every VM on a Hyper-V host,
+  handed out as memory leases to pods and to clients outside Kubernetes.
+type: application
+# Chart version = app version (DESIGN §2). Both stay 0.0.0-dev until releases
+# are cut; publishing the chart is deferred (DESIGN §12).
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"
+# Admission webhook matchConditions need Kubernetes 1.30 (DESIGN §1). The
+# "-0" suffix also admits distribution versions such as v1.30.4-gke.100.
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/matfax/hvmc
+sources:
+  - https://github.com/matfax/hvmc
+keywords:
+  - hyper-v
+  - memory
+  - scheduler-extender
+maintainers:
+  - name: matfax
+    url: https://github.com/matfax

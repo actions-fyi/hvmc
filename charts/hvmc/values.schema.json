@@ -1,0 +1,576 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "hvmc chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "required": [
+        "repository"
+      ],
+      "additionalProperties": false
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "crds": {
+      "type": "object",
+      "properties": {
+        "keep": {
+          "type": "boolean",
+          "description": "Keep the CRDs on helm uninstall."
+        }
+      },
+      "additionalProperties": false
+    },
+    "hostConfig": {
+      "type": "object",
+      "properties": {
+        "existing": {
+          "type": "boolean",
+          "description": "HostConfig \"default\" is managed outside the chart."
+        },
+        "capacity": {
+          "$ref": "#/definitions/quantity"
+        },
+        "reserve": {
+          "$ref": "#/definitions/quantity"
+        },
+        "defaultMargin": {
+          "$ref": "#/definitions/quantity"
+        },
+        "step": {
+          "$ref": "#/definitions/quantity"
+        },
+        "dmAccounting": {
+          "type": "string",
+          "enum": [
+            "maximum",
+            "assigned"
+          ]
+        },
+        "staleAfter": {
+          "$ref": "#/definitions/duration"
+        },
+        "reconciler": {
+          "type": "object",
+          "properties": {
+            "priorityOverQueue": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/definitions/agent"
+          }
+        },
+        "vms": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/definitions/vm"
+          }
+        }
+      },
+      "required": [
+        "existing"
+      ],
+      "additionalProperties": false
+    },
+    "pki": {
+      "type": "object",
+      "properties": {
+        "existingCASecret": {
+          "type": "string",
+          "description": "Secret with the CA to use instead of hvmc-ca."
+        }
+      },
+      "additionalProperties": false
+    },
+    "facade": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "ClusterIP",
+                "LoadBalancer"
+              ]
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "loadBalancerSourceRanges": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "port"
+          ],
+          "additionalProperties": false
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "className": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "tls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "secretName": {
+                    "type": "string"
+                  },
+                  "hosts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressControllerNamespaceSelector": {
+          "$ref": "#/definitions/labelSelector"
+        },
+        "metricsNamespaceSelector": {
+          "$ref": "#/definitions/labelSelector"
+        },
+        "apiServer": {
+          "type": "object",
+          "properties": {
+            "ports": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/definitions/port"
+              }
+            },
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "NetworkPolicyPeers; empty allows any destination."
+            }
+          },
+          "additionalProperties": false
+        },
+        "dns": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "NetworkPolicyPeers; empty allows any destination."
+            }
+          },
+          "additionalProperties": false
+        },
+        "agentPorts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/port"
+          }
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^(([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)?$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "description": "Coordinator container resources."
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podLabels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "priorityClassName": {
+      "type": "string"
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Pod tolerations."
+    },
+    "affinity": {
+      "type": "object",
+      "description": "Pod affinity; empty spreads the replicas over nodes."
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "quantity": {
+      "description": "Kubernetes quantity, e.g. 4Gi.",
+      "type": [
+        "string",
+        "integer"
+      ],
+      "pattern": "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
+      "minimum": 0
+    },
+    "duration": {
+      "type": "string",
+      "description": "Go duration, e.g. 30s or 5m.",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "dnsName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "labelSelector": {
+      "description": "Kubernetes label selector; {} selects everything.",
+      "type": "object",
+      "properties": {
+        "matchLabels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "matchExpressions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Agent name; its bootstrap token Secret is hvmc-bootstrap-<name>.",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "host"
+          ]
+        },
+        "dnsName": {
+          "$ref": "#/definitions/dnsName",
+          "description": "DNS name of the Hyper-V host."
+        },
+        "address": {
+          "type": "string",
+          "description": "Optional address override.",
+          "maxLength": 253
+        },
+        "port": {
+          "$ref": "#/definitions/port",
+          "description": "gRPC port, default 9443."
+        }
+      },
+      "required": [
+        "name",
+        "dnsName"
+      ],
+      "additionalProperties": false
+    },
+    "guestAgent": {
+      "type": "object",
+      "properties": {
+        "dnsName": {
+          "type": "string",
+          "maxLength": 253
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 253
+        },
+        "port": {
+          "$ref": "#/definitions/port"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "$ref": "#/definitions/quantity"
+        },
+        "max": {
+          "$ref": "#/definitions/quantity"
+        },
+        "grow": {
+          "type": "boolean"
+        },
+        "shrink": {
+          "type": "boolean"
+        },
+        "shrinkHysteresis": {
+          "$ref": "#/definitions/quantity"
+        },
+        "dwell": {
+          "$ref": "#/definitions/duration"
+        },
+        "cooldown": {
+          "$ref": "#/definitions/duration"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "additionalProperties": false
+    },
+    "vm": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Hyper-V VM name.",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "node": {
+          "type": "string",
+          "description": "Kubernetes node name.",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "guestOS": {
+          "type": "string",
+          "enum": [
+            "linux",
+            "windows"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "fixed",
+            "static",
+            "dynamic"
+          ]
+        },
+        "base": {
+          "$ref": "#/definitions/quantity"
+        },
+        "margin": {
+          "$ref": "#/definitions/quantity"
+        },
+        "policy": {
+          "$ref": "#/definitions/policy"
+        },
+        "probe": {
+          "type": "boolean"
+        },
+        "guestAgent": {
+          "$ref": "#/definitions/guestAgent"
+        }
+      },
+      "required": [
+        "name",
+        "guestOS",
+        "mode",
+        "base"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "guestOS": {
+                "const": "linux"
+              }
+            },
+            "required": [
+              "guestOS"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "const": "fixed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "static",
+                  "dynamic"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "probe": {
+                "const": true
+              }
+            },
+            "required": [
+              "probe"
+            ]
+          },
+          "then": {
+            "properties": {
+              "guestOS": {
+                "const": "windows"
+              },
+              "mode": {
+                "const": "static"
+              }
+            },
+            "not": {
+              "required": [
+                "node"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

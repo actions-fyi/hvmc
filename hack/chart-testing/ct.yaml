@@ -1,0 +1,13 @@
+# chart-testing configuration, used by `make ct-lint` (and later ct install).
+# lint-conf and chart-yaml-schema come from the pinned ct module (Makefile).
+target-branch: main
+chart-dirs:
+  - charts
+charts:
+  - charts/hvmc
+# Chart version = app version, 0.0.0-dev until releases are cut (DESIGN §2).
+check-version-increment: false
+# Would call the GitHub API for every maintainer.
+validate-maintainers: false
+# The chart has no dependencies.
+skip-helm-dependencies: true

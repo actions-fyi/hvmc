@@ -1,0 +1,12 @@
+# HostConfig "default" is managed outside the chart; agents on a non-default
+# port and an operator-provided CA.
+hostConfig:
+  existing: true
+networkPolicy:
+  agentPorts:
+    - 10443
+pki:
+  existingCASecret: example-ca
+facade:
+  ingress:
+    host: hvmc.example.com

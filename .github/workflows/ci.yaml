@@ -37,6 +37,8 @@ jobs:
           git add --intent-to-add .
           git diff --exit-code
           test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+      - name: Helm chart (lint, golden tests)
+        run: make helm-lint
       - name: Envtest binaries
         run: make envtest
       - name: Test (unit and envtest)
@@ -68,6 +70,8 @@ jobs:
         run: make lint-go
       - name: buf lint
         run: make lint-proto
+      - name: ct lint
+        run: make ct-lint
       - name: buf breaking (against main)
         run: |
           git fetch --no-tags --depth=1 origin main

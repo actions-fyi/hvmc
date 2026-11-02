@@ -19,6 +19,8 @@ Requires Go (the toolchain is downloaded automatically from `go.mod`) and GNU ma
 ```sh
 make help       # list targets
 make test lint  # what CI runs; test downloads envtest binaries into .envtest/
-make generate   # deepcopy and CRDs (config/crd/bases) from api/v1alpha1
+make generate   # deepcopy and CRDs (config/crd/bases, charts/hvmc) from api/v1alpha1
+make helm-lint  # helm lint + golden tests of charts/hvmc (make helm-golden rewrites them)
+make ct-lint    # chart-testing lint; needs python3 for yamllint and yamale
 make build      # bin/hvmc
 ```
