@@ -31,7 +31,7 @@ func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {
 func TestStubs(t *testing.T) {
 	for _, path := range []string{
 		"serve",
-		"agent run", "agent install", "agent uninstall", "agent enroll", "agent status", "agent policy sync",
+		"agent install", "agent uninstall", "agent status", "agent policy sync",
 		"check",
 		"test run", "test list", "test logs",
 		"token create",

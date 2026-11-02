@@ -91,7 +91,7 @@ func newRootCommand(e env) *cobra.Command {
 	root.AddCommand(
 		newVersionCommand(),
 		newServeCommand(),
-		newAgentCommand(),
+		newAgentCommand(e),
 		newPlanCommand(e),
 		newCheckCommand(),
 		newTestCommand(),
