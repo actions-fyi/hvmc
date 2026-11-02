@@ -12,6 +12,7 @@ linters:
     - errname
     - errorlint
     - exhaustive
+    - gocognit
     - gocritic
     - gosec
     - misspell
@@ -22,6 +23,10 @@ linters:
     - unparam
     - usestdlibvars
   settings:
+    gocognit:
+      # Same limit as SonarQube's cognitive-complexity rule, so findings
+      # show up in `make lint` before they reach the PR.
+      min-complexity: 15
     exhaustive:
       default-signifies-exhaustive: true
     nolintlint:
