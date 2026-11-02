@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,16 +179,17 @@ func TestPlanDerivedScenario(t *testing.T) {
 
 func TestPlanErrors(t *testing.T) {
 	hc := filepath.Join("testdata", "plan", "hostconfig.yaml")
+	notExist := notExistMessage(t, "testdata/plan/missing.yaml")
 	for _, tc := range []struct {
 		name     string
 		hc       string
 		scenario string
 		wantErr  string
 	}{
-		{name: "missing HostConfig", hc: "testdata/plan/missing.yaml", wantErr: "no such file"},
+		{name: "missing HostConfig", hc: "testdata/plan/missing.yaml", wantErr: notExist},
 		{name: "invalid HostConfig", hc: writeFile(t, "bad.yaml", "spec:\n  vms:\n    - {name: vm-a, guestOS: linux, mode: static, base: 1Gi}\n"), wantErr: "linux guests must use mode fixed"},
 		{name: "no capacity without scenario", hc: hc, wantErr: "spec.capacity is 0"},
-		{name: "missing scenario", hc: hc, scenario: "testdata/plan/missing.yaml", wantErr: "no such file"},
+		{name: "missing scenario", hc: hc, scenario: "testdata/plan/missing.yaml", wantErr: notExist},
 		{name: "unknown scenario field", hc: hc, scenario: writeFile(t, "s1.yaml", "host: {name: h, total: 8Gi}\nrequest: []\n"), wantErr: "unknown field"},
 		{name: "invalid scenario", hc: hc, scenario: writeFile(t, "s2.yaml", "host: {name: h}\n"), wantErr: "host.total must be positive"},
 		{name: "pod without candidates", hc: hc, scenario: writeFile(t, "s3.yaml", "host: {name: h, total: 8Gi}\nrequests:\n  - {kind: Pod, bytes: 1Gi}\n"), wantErr: "request request-1: kind Pod needs vm or candidateVMs"},
@@ -287,4 +289,17 @@ func TestPlanJSONFields(t *testing.T) {
 	if diff := cmp.Diff(want, causes); diff != "" {
 		t.Errorf("blockingCause by request (-want +got):\n%s", diff)
 	}
+}
+
+// notExistMessage returns the operating system's own text for opening a
+// missing file ("no such file or directory" on Unix, "The system cannot find
+// the file specified." on Windows).
+func notExistMessage(t *testing.T, path string) string {
+	t.Helper()
+	_, err := os.Stat(path)
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) = %v, want a not-exist PathError", path, err)
+	}
+	return pathErr.Err.Error()
 }
