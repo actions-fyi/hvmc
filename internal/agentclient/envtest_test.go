@@ -117,7 +117,7 @@ func TestEnvtestAgents(t *testing.T) {
 		withScenario(func(sc *fake.Scenario) { sc.Guests[0].Certificate = &fake.CertSpec{FailInstall: 1} }))
 	hc := e.hc.DeepCopy()
 	must(t, k8sClient.Create(ctx, hc))
-	t.Cleanup(func() { _ = k8sClient.Delete(ctx, hc) })
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), hc) }) // t.Context() is done in Cleanup
 
 	sink := teeSink{e.events, apiEventSink(t, hc)}
 	rot := &agentclient.Rotator{CA: e.ca, Reader: k8sClient, Events: sink}
