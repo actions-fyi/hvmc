@@ -4,7 +4,7 @@ This document specifies hvmc: what it does, how its parts work together and what
 
 ## 0. One-paragraph summary
 
-hvmc (Hyper-V Memory Coordinator) is a Go service running in Kubernetes that owns a single RAM ledger for all VMs on one Hyper-V host and hands out *memory leases*. Two front doors: a dedicated scheduler (`hvmc-scheduler`, upstream kube-scheduler shipped by the chart, with hvmc as its **extender** for filter/prioritize/bind) for pods that request the extended resource `hvmc.fax.fyi/ram` — an admission webhook routes those pods to it automatically — and an **HTTP facade** (`/v1/leases`) for clients outside Kubernetes, for example a container orchestrator on a Windows VM that runs Docker. The coordinator never shells into anything: it talks gRPC over mutual TLS to **agents** — one **host agent** (Windows service on the Hyper-V host, the only component that touches Hyper-V) and one **guest agent** per managed VM (systemd service on Linux, Windows service on Windows; never a container). A lease is granted only when the target VM has headroom or the shared host pool can cover it; a Windows VM is grown *before* the slot is handed out and the growth is verified inside the guest (Linux VMs are fixed-size and admission-only, §1); otherwise the request waits in a single priority-FIFO queue shared by pods and facade clients. A reconciler keeps every managed VM's free memory inside a hysteresis band around a fixed, absolute margin (default 2 GiB, no percentages). Agents are registered as Kubernetes service entries (EndpointSlices) whose readiness is driven by a health mechanism that also gates the ledger.
+hvmc (Hyper-V Memory Coordinator) is a Go service running in Kubernetes that owns a single RAM ledger for all VMs on one Hyper-V host and hands out *memory leases*. Two front doors: a dedicated scheduler (`hvmc-scheduler`, upstream kube-scheduler shipped by the chart, with hvmc as its **extender** for filter/prioritize/bind) for pods that request the extended resource `hvmc.fax.fyi/ram` — an admission webhook routes those pods to it automatically — and an **HTTP facade** (`/v1/leases`) for clients outside Kubernetes, for example a container orchestrator on a Windows VM that runs Docker. The coordinator never shells into anything: it talks gRPC over mutual TLS to **agents** — one **host agent** (Windows service on the Hyper-V host, the only component that touches Hyper-V) and one **guest agent** per managed VM (systemd service on Linux, Windows service on Windows; never a container). A lease is granted only when the target VM has headroom or the shared host pool can cover it; a Windows VM is grown *before* the slot is handed out and the growth is verified inside the guest (Linux VMs are fixed-size and admission-only, §1); otherwise the request waits in a single priority-FIFO queue shared by pods and facade clients. A reconciler keeps every managed VM's free memory inside a hysteresis band around a fixed, absolute margin (default 2 GiB, no percentages). Agents are registered as Kubernetes service entries (EndpointSlices) whose readiness is driven by a health mechanism that also gates the ledger. A web **dashboard** shows scheduling and health live and runs **active tests** that exercise the real production path — test pods through the scheduling chain, probe resizes on a disposable VM — on demand or on a schedule (§15).
 
 ## 1. Platform facts
 
@@ -26,7 +26,8 @@ hvmc (Hyper-V Memory Coordinator) is a Go service running in Kubernetes that own
   - `serve` — the coordinator.
   - `agent run|install|uninstall|enroll|status` — host or guest agent (`--role host|guest`); `install`/`uninstall` register and remove the agent as a native system service (Windows service or systemd unit, §4.5). No separate installer.
   - `plan` — dry-run ledger from a HostConfig file against the fake host.
-  - `check` — end-to-end connectivity, identity, health and policy check (reads HostConfig status through the caller's kubeconfig). `--probe-resize --vm <name>` creates a `Probe` MemoryLease for a VM marked `probe: true` and waits for grow, verification and shrink-back, so the probe takes the exact production path (§3.2).
+  - `check` — end-to-end connectivity, identity, health and policy check (reads HostConfig status through the caller's kubeconfig).
+  - `test run|list|logs` — create a `TestRun` for a built-in active test (§15.4), list runs, show a run's steps and measurements; equivalent to the dashboard's test controls.
   - `ca export` — print the CA certificate and its SHA-256 fingerprint.
   - `token create --agent <name>` — re-issue a bootstrap token for an agent (the coordinator creates the first one automatically, §4.6).
 - Scheduler image: upstream `registry.k8s.io/kube-scheduler`, tag derived by the chart from the cluster's version (`.Capabilities.KubeVersion`, distribution suffix stripped), overridable. No custom scheduler build.
@@ -61,7 +62,8 @@ charts/hvmc/
 pkg/facadeclient/         Go client for the facade (the only public package)
 examples/                 PowerShell facade client, orchestrator contract
 test/e2e/                 kind-based end-to-end tests
-test/hyperv/              Hyper-V integration suite (build tag `hyperv`, run by contributors against their own host; not in CI)
+internal/selftest/        active tests (§15.4): test catalog, TestRun/TestSchedule controllers
+internal/dashboard/       web dashboard (§15): handlers, templates, SSE, rolling history, embedded assets
 config/samples/           example CRs
 docs/                     DESIGN.md (this file), install (chart, Hyper-V host, guest agents, facade clients), operations runbook
 hack/                     e2e scripts
@@ -85,6 +87,7 @@ Anything not listed here needs a reason in the PR that adds it. Prefer the stand
 | Internal CA, CSRs, bootstrap tokens | stdlib `crypto/x509`, `crypto/ecdsa`, `crypto/rand`; no PKI library, no cert-manager |
 | Metrics | `github.com/prometheus/client_golang` (controller-runtime registry) |
 | Logging | stdlib `log/slog`, bridged to controller-runtime's `logr` via `logr.FromSlogHandler`; token redaction with a `ReplaceAttr` |
+| Dashboard | stdlib `html/template`, `embed`, `net/http` (server-sent events); one vendored, pinned htmx file (0BSD) as a static asset — no JavaScript build step and no additional Go dependency |
 
 **Shared (coordinator and agents)**
 
@@ -174,7 +177,7 @@ One ledger mutex guards only in-memory state; **no I/O under it**. Every state c
 
 Filter/prioritize therefore never wait on I/O. The per-VM lock serializes resizes of one VM; resizes of different VMs proceed in parallel.
 
-This sequence exists exactly once, in the **grant executor** (`internal/grant`), and every requester uses it: extender bind (§7.3), the facade (§8), the reconciler (§9) and the probe (`hvmc check --probe-resize`). The executor also owns the shrink path (reserve shrink → `SetStartup` lower → midpoint retry, max 3 → re-read `MemoryAssigned`/`MemoryStartup` and repair, §3.5) and a **dispatcher** that serves non-pod requests in queue order as soon as they are grantable. Pod requests are granted only from bind, because the scheduler chooses their node.
+This sequence exists exactly once, in the **grant executor** (`internal/grant`), and every requester uses it: extender bind (§7.3), the facade (§8), the reconciler (§9) and the active tests (§15.4). The executor also owns the shrink path (reserve shrink → `SetStartup` lower → midpoint retry, max 3 → re-read `MemoryAssigned`/`MemoryStartup` and repair, §3.5) and a **dispatcher** that serves non-pod requests in queue order as soon as they are grantable. Pod requests are granted only from bind, because the scheduler chooses their node.
 
 ### 3.3 Lease state machine
 
@@ -219,6 +222,7 @@ rpc WatchVMs(WatchVMsRequest) returns (stream VMSnapshot);   // full snapshot on
 rpc SetStartup(SetStartupRequest) returns (ResizeResult);    // static VMs; result carries assigned/startup before & after
 rpc SetDynamicLimits(SetDynamicLimitsRequest) returns (ResizeResult); // DM VMs; max only raises, min only lowers
 rpc ProposePolicy(ProposePolicyRequest) returns (ProposePolicyResponse); // stores a pending policy only, §4.3
+rpc GetDiagnostics(GetDiagnosticsRequest) returns (GetDiagnosticsResponse); // anonymised record of raw cmdlet errors, §15.4
 rpc RotateCertificate(...) / InstallCertificate(...)         // §4.6
 ```
 
@@ -251,7 +255,7 @@ vms:
     max: 32Gi
 ```
 
-Reads (`ListVMs`, `WatchVMs`) cover all VMs (the pool needs them); writes are allowed only for listed VMs within `[min, max]`. `GetHost` returns the canonical digest of the active policy (`internal/policy`, the same function the coordinator uses); a mismatch with the digest of the policy derived from HostConfig sets `PolicyInSync=False` and the coordinator proposes the derived policy.
+Reads (`ListVMs`, `WatchVMs`) cover all VMs (the pool needs them); writes are allowed only for listed VMs within `[min, max]`. The policy derived from HostConfig (`internal/policy`) lists every managed VM: `fixed` VMs read-only; `static`/`dynamic` VMs with a `policy` writable within `[policy.min, policy.max]`; `static`/`dynamic` VMs without a `policy` (admission-only, probe VMs) writable within `[base, capacity − reserve]`, where capacity is `spec.capacity` or, when that is 0, the capacity the coordinator has observed (unbounded only until the host has been observed once — the first observation therefore produces a new proposal). Operators who want tighter bounds without the reconciler give the VM a `policy` with `grow: false, shrink: false`. Lease grows on a VM never exceed its policy maximum, because the agent refuses them. `GetHost` returns the canonical digest of the active policy (`internal/policy`, the same function the coordinator uses); a mismatch with the digest of the policy derived from HostConfig sets `PolicyInSync=False` and the coordinator proposes the derived policy.
 
 ### 4.4 Guest agent API (`hvmc.agent.v1.GuestAgent`) and verification
 
@@ -354,6 +358,9 @@ spec:
       guestOS: windows
       mode: static
       base: 4Gi
+      testing:                # optional opt-in for active tests on this VM/node (§15.4)
+        enabled: true
+        maxBytes: 1Gi         # cap for any single test request [1Gi]
       policy:                 # optional, static/dynamic only; without it the VM is admission-only (no reconciler)
         min: 6Gi
         max: 24Gi
@@ -367,7 +374,7 @@ spec:
       mode: static
       base: 3Gi
       guestAgent: { dnsName: docker-host-1.example.com, port: 9443 }
-    - name: probe-1           # disposable VM for `hvmc check --probe-resize`; never carries workloads
+    - name: probe-1           # disposable VM for the probe-resize active test (§15.4); never carries workloads
       guestOS: windows
       mode: static
       base: 2Gi
@@ -405,7 +412,7 @@ For pods, `bytes` = the pod's effective request for `hvmc.fax.fyi/ram`, computed
 ## 6. HA and front-door placement
 
 - Coordinator Deployment with 2 replicas and leader election (`coordination.k8s.io` Lease). Only the leader holds the ledger, talks to agents and writes status.
-- Pod readiness means "process up and serving" on every replica, so the webhook works everywhere and the Deployment is Available (`helm --atomic` works). Leader-only routing uses a label instead: after taking leadership **and** completing the ledger rebuild (§3.5), the leader labels its own pod `hvmc.fax.fyi/leader=true`; the `hvmc-extender` and `hvmc-facade` Services select that label. A replica that loses leadership exits (controller-runtime default), so a stale label cannot outlive it. Failover gap ≈ lease duration (15 s); during it `hvmc-scheduler` cannot reach the extender and, because `ignorable: false`, hvmc pods simply wait.
+- Pod readiness means "process up and serving" on every replica, so the webhook works everywhere and the Deployment is Available (`helm --atomic` works). Leader-only routing uses a label instead: after taking leadership **and** completing the ledger rebuild (§3.5), the leader labels its own pod `hvmc.fax.fyi/leader=true`; the `hvmc-extender`, `hvmc-facade` and `hvmc-dashboard` Services select that label. A replica that loses leadership exits (controller-runtime default), so a stale label cannot outlive it. Failover gap ≈ lease duration (15 s); during it `hvmc-scheduler` cannot reach the extender and, because `ignorable: false`, hvmc pods simply wait.
 - The admission webhook needs no ledger and is served by **every** replica (separate Service without leader gating), so pod creation never depends on a failover.
 - Process interface the chart relies on: `hvmc serve --leader-elect=true --http-bind-address=:8080 --metrics-bind-address=:9090 --health-probe-bind-address=:8081`, plus `--hostconfig-configmap=hvmc-hostconfig` unless `hostConfig.existing` (§11) and `--existing-ca-secret=<name>` when `pki.existingCASecret` is set (§4.6). The pod's name and namespace come from the downward API as `POD_NAME` and `POD_NAMESPACE`; the leader patches the label onto that pod. Probes use the health port `:8081`: liveness `/healthz`, readiness `/readyz` ("process up and serving", above).
 - `hvmc-scheduler` Deployment: 2 replicas, its own leader election Lease.
@@ -417,8 +424,8 @@ For pods, `bytes` = the pod's effective request for `hvmc.fax.fyi/ram`, computed
 
 Pod authors only add the extended resource to `limits`. A MutatingWebhookConfiguration (shipped by the chart, served by the coordinator on `:9444`) matches pod CREATE with a CEL `matchCondition` — `object.spec.containers` or `initContainers` has a `limits` entry for `hvmc.fax.fyi/ram` — so no other pod ever reaches the webhook. `failurePolicy: Fail`, so an hvmc pod can never be scheduled past the ledger. It:
 - sets `schedulerName: hvmc-scheduler` (rejects a pod that explicitly names another non-default scheduler);
-- sets `requests.memory` of each container to `podDefaults.memoryRequest` [64Mi]. By admission time Kubernetes has already defaulted `requests.memory` to `limits.memory`, which would make the in-tree `NodeResourcesFit` filter reject nodes that are about to be grown; for hvmc pods the lease is the memory reservation, so the request is normalized always;
-- adds `limits.memory` = the container's `hvmc.fax.fyi/ram` limit when `limits.memory` is unset, so the container is capped at its lease;
+- sets `requests.memory` of each container (regular or init) that carries a `hvmc.fax.fyi/ram` limit to `podDefaults.memoryRequest` [64Mi]; other containers are left alone. By admission time Kubernetes has already defaulted `requests.memory` to `limits.memory`, which would make the in-tree `NodeResourcesFit` filter reject nodes that are about to be grown; for hvmc pods the lease is the memory reservation, so the request is normalized always;
+- adds `limits.memory` = the container's `hvmc.fax.fyi/ram` limit when `limits.memory` is unset, so the container is capped at its lease. A pod submitted with only the RAM limit is BestEffort; after the webhook it is Burstable;
 - annotates `hvmc.fax.fyi/managed: "true"`.
 
 Pod contract (README):
@@ -430,7 +437,7 @@ resources:
 
 ### 7.2 hvmc-scheduler (shipped by the chart)
 
-An upstream kube-scheduler Deployment with one profile, rendered by the chart into a ConfigMap; it runs in-cluster with its own ServiceAccount (bound to `system:kube-scheduler`, `system:volume-scheduler`, and `extension-apiserver-authentication-reader` in `kube-system`), so it uses in-cluster config and resolves cluster DNS:
+An upstream kube-scheduler Deployment with one profile, rendered by the chart into a ConfigMap; it runs in-cluster with its own ServiceAccount (bound to `system:kube-scheduler`, `system:volume-scheduler`, and `extension-apiserver-authentication-reader` in `kube-system`, plus a Role in the release namespace granting `coordination.k8s.io` `leases` `create`, and `get`/`update` on `resourceNames: [hvmc-scheduler]` — `system:kube-scheduler` only covers the lease named `kube-scheduler`, so without this Role the scheduler never becomes leader), so it uses in-cluster config and resolves cluster DNS:
 ```yaml
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
@@ -460,10 +467,11 @@ Known property of running a second scheduler: its cache does not see the default
 ### 7.3 Extender behaviour
 
 Served by the coordinator on `:8443` (TLS from the internal CA). Only `hvmc-scheduler` calls it, and only for pods that request the resource; hvmc's own pods never do, so there is no bootstrap dependency.
-- **Filter**: on the first call for a pod UID, create its MemoryLease in `Pending` (queue position = now; owner reference to the pod). For each candidate node mapped to a managed VM, evaluate `fits` under the queue rule (§3.4) without reserving. Nodes with no VM mapping fail for these pods. `FailedNodes[node] = "hvmc: queued #<pos>, need <n>Gi (headroom <h>, pool <p>)"` or `"hvmc: host agent <state>"`.
+- **Filter**: on the first call for a pod UID, create its MemoryLease in `Pending` (queue position = now; owner reference to the pod). For each candidate node mapped to a managed VM, evaluate `fits` under the queue rule (§3.4) without reserving. Nodes with no VM mapping fail for these pods. The `FailedNodes[node]` reason is a **fixed string per cause** — `hvmc: node not managed`, `hvmc: waiting for memory on this VM`, `hvmc: waiting for host pool`, `hvmc: queued behind earlier requests`, `hvmc: host agent unavailable`, `hvmc: guest agent unavailable`. Every change of the text rewrites the pod's `PodScheduled` condition, which requeues the pod immediately and defeats backoff (a counter in the text was measured at ~55 filter calls/s). Queue position, needed bytes, headroom and pool go to the MemoryLease status, rate-limited Events and the dashboard (§15.2) instead.
+- **Filter cost**: any cluster event requeues every waiting hvmc pod, so filter is a read-only ledger evaluation: no agent calls, no API writes after the first call for a pod (MemoryLease creation is idempotent), and a call-rate metric `hvmc_extender_filter_calls_total`.
 - **Prioritize**: 0–10, prefer `delta == 0` (no resize), then larger headroom.
 - **Bind**: Pending → Reserved (VM = chosen node's VM) → resize if `delta > 0` → verify → Granted → `POST pods/<name>/binding` → return. Any failure: lease back to `Pending` (keeps queue position) for retryable errors, `Failed` otherwise; return an error so the scheduler retries. Bind runs in the scheduler's asynchronous binding cycle, so a slow resize does not block other scheduling.
-- **Requeue nudge**: when capacity frees up and a waiting pod lease becomes grantable, the coordinator patches the pod's annotation `hvmc.fax.fyi/queue-generation`, so the scheduler re-evaluates it instead of waiting out backoff or the unschedulable-pods flush. The e2e test asserts the requeue latency.
+- **Requeue nudge**: when capacity frees up and a waiting pod lease becomes grantable, the coordinator patches the pod's annotation `hvmc.fax.fyi/queue-generation`, so the scheduler re-evaluates it at once instead of leaving it in the unschedulable queue until an unrelated cluster event or the 5-minute flush. The `requeue` active test (§15.4) and the e2e test assert < 1 s from release to the next filter call.
 - **Release**: the MemoryLease controller marks a pod lease `Released` when the pod object is deleted or reaches `Succeeded|Failed` — not when `deletionTimestamp` is set, because containers keep running through the grace period. Owner references make GC the backstop.
 
 ## 8. HTTP facade (clients outside Kubernetes)
@@ -511,7 +519,8 @@ Templates:
 - HostConfig `default` is rendered from `values.hostConfig`, but not as a HostConfig template: Helm builds every object of a release before it creates any, so a custom resource whose CRD is a template of the same release fails the first install ("ensure CRDs are installed first"); a hook would not help either (hooks are created, never updated, and recreating HostConfig would garbage-collect everything owned by it). The chart therefore ships the complete HostConfig manifest in ConfigMap `hvmc-hostconfig` (key `hostconfig.yaml`), and the coordinator server-side applies it (field manager `hvmc-chart`) on start and whenever the ConfigMap changes; apply errors surface as events and in the logs, and `values.schema.json` catches most of them at `helm install`. HostConfig has no owner reference to the ConfigMap, so with `crds.keep` it survives uninstall like the CRDs. With `hostConfig.existing: true` the chart renders no ConfigMap and the operator manages HostConfig `default` directly (kubectl, GitOps); the coordinator then only reads it.
 - Cleanup: every object the coordinator creates at runtime (agent Services/EndpointSlices, `hvmc-ca`, bootstrap Secrets, `hvmc-ca-bundle`, MemoryLeases without a pod owner) carries an owner reference to HostConfig `default`, so uninstall leaves nothing behind. Reinstalling therefore creates a new CA and agents re-enroll (documented).
 - Coordinator: Deployment, ServiceAccount, ClusterRole/Binding (pods get/list/watch/patch; pods/binding create; nodes get/list/watch; services, endpointslices, secrets, configmaps in the release namespace; mutatingwebhookconfigurations get/patch (own object, caBundle); events create/patch; coordination leases; hvmc.fax.fyi/*), PodDisruptionBudget. Rules a namespace suffices for (the four resources above, leases, and pods while they only serve the leader label) are a Role in the release namespace; events are cluster-wide because events about cluster-scoped objects are recorded in `default`.
-- `hvmc-scheduler`: Deployment, ConfigMap (§7.2), ServiceAccount + bindings, PodDisruptionBudget.
+- `hvmc-scheduler`: Deployment, ConfigMap (§7.2), ServiceAccount + bindings, leader-lease Role + RoleBinding (§7.2), PodDisruptionBudget.
+- Dashboard and active tests (§15): `hvmc-dashboard` Service (leader), Ingress path `/ui` on the facade Ingress, `TestRun`/`TestSchedule` CRDs, the namespace `hvmc-tests` with a Role/RoleBinding letting the coordinator create and delete pods there, and a NetworkPolicy that admits dashboard traffic only from the ingress controller (the auth proxy's identity headers are trusted only on that path).
 - MutatingWebhookConfiguration (§7.1), webhook Service (all replicas).
 - Services: `hvmc-extender` (leader), `hvmc-facade` (leader; ClusterIP or LoadBalancer), `hvmc-webhook` (all), `hvmc-metrics`. Selectorless agent Services/EndpointSlices are created by the coordinator from HostConfig (§4.7).
 - Ingress for facade + enrollment (`/v1/leases`, `/v1/vms`, `/v1/enroll`), TLS from a values-named Secret or cert-manager annotations.
@@ -520,7 +529,7 @@ Templates:
 - Secret for facade tokens when given in values (document ESO/OpenBao as the preferred source).
 - NOTES.txt: for every declared agent (host and every VM), the exact download + `hvmc agent install` command for its platform (enrollment URL, `kubectl` one-liner reading the bootstrap token, CA fingerprint), plus `kubectl get hostconfig default` to watch agents become Ready.
 
-Values (defaults in brackets): `image.repository/tag`, `replicas` [2], `crds.keep` [false], `hostConfig` [incl. `existing` false, `reserve` 4Gi, `defaultMargin` 2Gi], `pki.existingCASecret`, `scheduler.{enabled [true], image.tag [from cluster version], replicas [2], resources}`, `webhook.{failurePolicy [Fail]}`, `podDefaults.memoryRequest` [64Mi], `facade.{enabled [true], service.type [ClusterIP], ingress.{enabled [true], host, className, annotations, tls}, existingTokenSecret, tokens}`, `networkPolicy.{enabled [true], ingressControllerNamespaceSelector}`, `metrics.serviceMonitor.enabled` [false], `resources`, `nodeSelector`, `tolerations`, `affinity`, `devFakeAgents` [false] (coordinator runs in-process fake agents; used by CI).
+Values (defaults in brackets): `image.repository/tag`, `replicas` [2], `crds.keep` [false], `hostConfig` [incl. `existing` false, `reserve` 4Gi, `defaultMargin` 2Gi], `pki.existingCASecret`, `scheduler.{enabled [true], image.tag [from cluster version], replicas [2], resources}`, `webhook.{failurePolicy [Fail]}`, `podDefaults.memoryRequest` [64Mi], `facade.{enabled [true], service.type [ClusterIP], ingress.{enabled [true], host, className, annotations, tls}, existingTokenSecret, tokens}`, `dashboard.{enabled [true], auth.{userHeader [X-Forwarded-User], groupsHeader [X-Forwarded-Groups], testerGroups [] }}`, `selftest.{namespace [hvmc-tests], images.{pause, consumer}}`, `networkPolicy.{enabled [true], ingressControllerNamespaceSelector}`, `metrics.serviceMonitor.enabled` [false], `resources`, `nodeSelector`, `tolerations`, `affinity`, `devFakeAgents` [false] (coordinator runs in-process fake agents; used by CI).
 
 `helm lint`, `helm template` golden tests, `ct lint` and `ct install` (kind cluster, `devFakeAgents: true`: install, schedule a pod with the resource through the webhook and `hvmc-scheduler`, assert Granted, uninstall clean) in CI. Publishing the chart is **DEFERRED** (§12).
 
@@ -536,20 +545,80 @@ Values (defaults in brackets): `image.repository/tag`, `replicas` [2], `crds.kee
 
 ## 13. Milestones (each ends green in CI and tagged)
 
-1. **v0.1.0 foundation**: repo, CRDs with validation, ledger with queue and property tests, proto definitions, host policy package, fake agents, `hvmc plan`, CI on Linux and Windows; spikes on Hyper-V behaviour and the scheduling chain.
+1. **v0.1.0 foundation**: repo, CRDs with validation, ledger with queue and property tests, proto definitions, host policy package, fake agents, `hvmc plan`, CI on Linux and Windows.
 2. **v0.2.0 agents**: host and guest agents with self-install/upgrade/uninstall (Windows service, systemd), internal CA, enrollment and rotation, health mechanism, agent service entries, coordinator process with leader label and HostConfig status, chart base with enrollment exposure, `hvmc check`.
-3. **v0.3.0 grants and scheduling**: lease store and MemoryLease controller, grant executor (grow, shrink, dispatcher), admission webhook, extender, `hvmc-scheduler` in the chart, `hvmc check --probe-resize`, kind e2e.
-4. **v0.4.0 facade**: `/v1/leases`, token auth, TTL/heartbeat, Ingress paths, Go and PowerShell clients.
-5. **v0.5.0 reconciler**: hysteresis decisions for Windows VMs, executed through the grant executor; DM limits.
-6. **v1.0.0 release**: release pipeline, image on Docker Hub, agent archives on GitHub Releases, chart installable from the repo, docs (install, Hyper-V host setup, guest agent setup, operations runbook, design), `config/samples/`, hardening and soak test.
+3. **v0.3.0 grants and scheduling**: lease store and MemoryLease controller, grant executor (grow, shrink, dispatcher), admission webhook, extender, `hvmc-scheduler` in the chart, kind e2e.
+4. **v0.4.0 dashboard and active tests**: dashboard with scheduling and health monitors, trusted-proxy auth, `TestRun`/`TestSchedule`, the `agents`, `scheduling`, `requeue` and `probe-resize` tests, `hvmc test`, diagnostics export.
+5. **v0.5.0 facade**: `/v1/leases`, token auth, TTL/heartbeat, Ingress paths, Go and PowerShell clients, `facade` test.
+6. **v0.6.0 reconciler**: hysteresis decisions for Windows VMs, executed through the grant executor; DM limits; `reconciler` test.
+7. **v1.0.0 release**: release pipeline, image on Docker Hub, agent archives on GitHub Releases, chart installable from the repo, docs (install, Hyper-V host setup, guest agent setup, dashboard and active tests, operations runbook, design), `config/samples/`, hardening and soak test.
 
 ## 14. Testing matrix
 
 - Unit: ledger property tests (pool never negative; `Σ committed ≤ capacity − reserve`; FIFO order within a class; the head of the queue is never overtaken by a pool-drawing or same-VM request; rollback restores state exactly; no I/O while the ledger mutex is held — enforced by a test harness that fails if the fake agent is called under the lock), hysteresis (table-driven over time), quantization, effective pod request computation, offset-based verification.
 - Agent: pwsh worker protocol (mock Hyper-V module on the Windows runner), local policy enforcement (out-of-range, unlisted VM, write to `fixed` VM), health check transitions, certificate rotation with rollback.
 - envtest: webhook mutations (scheduler name, request normalization, untouched non-hvmc pods); MemoryLease lifecycle with fake agents; pod deletion → Released (not on deletionTimestamp); coordinator restart and leader failover → ledger rebuilt identically, including Reserved/Resizing recovery; agent Unreachable → ledger frozen, nothing revoked; EndpointSlice conditions follow health.
-- Hyper-V integration suite (`test/hyperv/`, not run in CI): run by a contributor against their own Hyper-V host with a disposable VM, configured through environment variables. Covers: Linux node admission against its fixed size (lease refused once headroom is used, no resize attempted); Windows node grow + verify + pod using the new memory; Windows shrink incl. refused shrink; DM VM observation; scheduler bind of a real pod; facade lease from a non-Kubernetes VM; failure injection (stop `hvmc-agent` on the host → hvmc pods wait with a clear reason, other pods schedule normally; kill the pwsh worker → SCM/worker restart; expire a leaf cert → rotation).
+- Dashboard: handler tests for every view and action, SSE stream, trusted-header handling (missing user header rejected, test actions refused without a tester group), Content-Security-Policy headers; `TestRun`/`TestSchedule` controllers in envtest with fake agents, including cleanup on deletion and refusal while frozen.
+- Real Hyper-V behaviour is verified in running installations by the active tests (§15.4) — not by scripts on contributors' machines. Their results are visible in the dashboard and as `TestRun` status; the diagnostics export (§15.4) feeds real error shapes into the Windows CI mock.
 
-## 15. Non-goals (v1)
+## 15. Dashboard and active testing
+
+The coordinator serves a web dashboard for operators: what the ledger and the scheduling chain are doing, how healthy every component is, and **active tests** that exercise the real production path in the running installation, on demand or on a schedule. An installation proves itself instead of relying on one-off manual experiments.
+
+### 15.1 Serving and access
+
+- Served by the coordinator on `:8090` under `/ui/`, behind the leader label like the facade (§6) because only the leader holds the ledger; exposed through the chart's Ingress (path `/ui`).
+- Server-rendered HTML (`html/template`) with one vendored htmx file and a stylesheet embedded via `go:embed`; no JavaScript build step. Live views update through server-sent events (`/ui/events`). Strict Content-Security-Policy (`default-src 'self'`, no inline script).
+- **Authentication is delegated to an auth proxy** in front of the dashboard (an Ingress auth middleware, oauth2-proxy or similar). The coordinator trusts the identity headers `dashboard.auth.userHeader` and `dashboard.auth.groupsHeader` and rejects requests without a user. The dashboard port accepts traffic only from the ingress controller (NetworkPolicy), so the headers cannot be set by anything else in the cluster.
+- **Authorization:** every authenticated user can view. Starting, cancelling and scheduling tests requires membership in one of `dashboard.auth.testerGroups`; when the list is empty (default), test controls are hidden and the API refuses them. Every action is recorded as a Kubernetes Event naming the user.
+- The same actions are available without the dashboard: `TestRun`/`TestSchedule` objects created with kubectl (Kubernetes RBAC applies), or `hvmc test run`, which creates them.
+
+### 15.2 Scheduling monitor
+
+- **Host:** capacity, reserve, Σ committed, pool, host free memory, frozen state.
+- **Per VM:** assigned, floor, headroom, leased, used, available, mode, policy bounds, agent state.
+- **Queue** in order: request, kind, priority, position, bytes, candidate VMs, and the blocking cause (the same fixed cause strings as the extender's filter reasons, §7.3) with the numbers behind it.
+- **Lease timeline:** phase transitions with timestamps and the durations of reserve → resize → verify → grant.
+- **Scheduling activity:** extender filter/prioritize/bind call rates and latencies, webhook decisions, requeue nudges.
+- **Rolling history** kept in memory on the leader (6 h at 10 s resolution, lost on failover): pool, queue length, grant latency, call rates. Long-term history is Prometheus' job through the metrics endpoint; the dashboard does not query Prometheus.
+
+### 15.3 Health monitor
+
+- **Per agent:** state (Ready/Degraded/Unreachable), last seen, version, certificate expiry, readiness checks, `PolicyInSync` with the diff of a pending proposal (§4.3).
+- **Coordinator and chain:** leader, replicas, rebuild status, HostConfig conditions; reachability of `hvmc-scheduler`, extender and webhook.
+- **History** of condition transitions from HostConfig status and Events.
+
+### 15.4 Active tests
+
+Tests live in `internal/selftest`; each is a named sequence of steps with measurements, findings and a verdict (`Passed`, `Failed`, `Aborted`).
+
+| Test | Exercises | Measures |
+|---|---|---|
+| `agents` | every agent: reachability, certificate chain and expiry, policy digest, health | round-trip time per agent, findings |
+| `scheduling` | a test pod requesting `hvmc.fax.fyi/ram` (default 256Mi) on an opted-in node: webhook → `hvmc-scheduler` → extender → grow and guest verification when needed → Running → delete → Released | latency of every hop, whether a resize happened |
+| `requeue` | fills an opted-in VM's headroom with one test pod, queues a second, deletes the first | release → next filter call (target < 1 s, §7.3) and → Running |
+| `probe-resize` | a `Probe` lease on a VM with `probe: true`: grow one step, verify in the guest, shrink back, then a shrink below what the guest can release | cmdlet durations, time to guest visibility, error classes, `MemoryStartup` drift and its repair (§3.5) |
+| `facade` | an External lease through the facade with a test token | grant latency, heartbeat, release |
+| `reconciler` | a load pod on an opted-in Windows node VM with a policy pushes free memory below the margin, then stops | time to grow, time to shrink after dwell, band respected |
+
+Test pods use upstream images only — `registry.k8s.io/pause` and `registry.k8s.io/e2e-test-images/resource-consumer`, both multi-arch including Windows — configurable in the chart values.
+
+Safety:
+- Tests touch only what is opted in through HostConfig: `vms[].testing.enabled` (scheduling, requeue, reconciler) and `probe: true` (probe-resize). Every test request is capped at `vms[].testing.maxBytes` [1Gi].
+- Test requests are queued at the lowest priority class, so they never get ahead of real requests.
+- One active test per VM at a time. A test that has to wait for the pool waits like any request and is aborted after its timeout [10m].
+- No test starts while the ledger is frozen or the target's agent is not Ready; the run is recorded as `Aborted` with the reason.
+- Test pods run in the namespace `hvmc-tests`, are owned by their `TestRun` and have `activeDeadlineSeconds`; deleting a `TestRun` removes everything it created.
+
+**Diagnostics export:** the host agent keeps a bounded, anonymised record of the raw cmdlet errors it has seen (error id, exception type and message, assigned/startup memory before and after; VM names replaced by placeholders) and returns it through `HostAgent.GetDiagnostics`. The dashboard downloads it as a JSON bundle in the fixture format of the Windows CI mock (§12), so real-world error shapes reach the tests without a manual script.
+
+### 15.5 API objects
+
+- `TestRun` (`hvmc.fax.fyi/v1alpha1`, cluster-scoped): `spec.test`, `spec.target` (`vm` and/or `node`), `spec.parameters` (e.g. `bytes`), `spec.timeout`; `status.phase` (`Pending|Running|Passed|Failed|Aborted`), steps with timestamps, measurements, findings, `startedBy`.
+- `TestSchedule` (cluster-scoped): `spec.template` (a `TestRun` spec), `spec.interval` (e.g. `6h`, with jitter), `spec.historyLimit` [10]; creates `TestRun`s it owns and prunes old ones.
+- HostConfig gains `vms[].testing.{enabled, maxBytes}` (§5).
+- Only the leader executes runs; both objects carry owner references to HostConfig `default` so uninstall removes them (§11).
+
+## 16. Non-goals (v1)
 
 No percentage margins. No SSH or WinRM transport. No scheduling gates. No changes to the cluster's default scheduler or control plane. No custom scheduler build (upstream kube-scheduler + extender; a framework-plugin build is a later option using the same ledger). No multi-host (the agent API is per host, so multi-host is an additive change later). No DM target control (impossible). No runtime resizing of Linux VMs (§1). No automatic reboot-based resizing of Linux VMs (`hvmc vm reboot-when-idle` is a later candidate). Chart publishing and changelog tooling are **DEFERRED**.

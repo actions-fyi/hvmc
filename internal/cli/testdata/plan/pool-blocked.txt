@@ -1,0 +1,27 @@
+Host
+  host agent  Ready
+  frozen      no
+  capacity    48Gi
+  reserve     4Gi
+  committed   38Gi
+  free        12Gi
+  in flight   0
+  pool        6Gi
+
+VMs
+  NAME          MODE     STATE      ASSIGNED  USED  FLOOR  HEADROOM  COMMITTED  LEASED
+  linux-node-1  fixed    Ready      8Gi       2Gi   5Gi    3Gi       8Gi        0
+  vm-a          static   Ready      8Gi       3Gi   6Gi    2Gi       8Gi        0
+  vm-b          static   Ready      6Gi       2Gi   5Gi    1Gi       6Gi        0
+  vm-dm         dynamic  Ready      6Gi       3Gi   5Gi    1Gi       12Gi       0
+  vm-unmanaged  -        Unmanaged  4Gi       -     -      -         4Gi        -
+
+Queue
+  POS  REQUEST    KIND      PRIORITY  BYTES  GRANTABLE  VM            FIT  DELTA  HEADROOM  POOL  REASON
+  1    request-6  External  10        1Gi    yes        vm-a          yes  0      2Gi       6Gi   -
+  2    request-1  External  0         4Gi    yes        vm-a          yes  3Gi    1Gi       6Gi   -
+  3    request-2  External  0         8Gi    no         vm-b          no   7Gi    1Gi       3Gi   PoolShort
+  4    request-3  Pod       0         1Gi    yes        vm-a          no   1Gi    0         3Gi   Queued
+  4    request-3  Pod       0         1Gi    yes        vm-dm         yes  0      1Gi       3Gi   -
+  5    request-4  Pod       0         2Gi    yes        linux-node-1  yes  0      3Gi       3Gi   -
+  6    request-5  External  0         512Mi  no         vm-b          no   0      1Gi       3Gi   Queued
