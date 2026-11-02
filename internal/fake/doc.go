@@ -11,7 +11,9 @@
 // proto/hvmc/agent/v1 and DESIGN §4: host free memory reacts to resizes,
 // writes are checked against the active policy with the error model's
 // codes, linked guests see their VM's assignment, WatchVMs and WatchMemory
-// push on change.
+// push on change. Policies are validated, digested and enforced by
+// internal/policy, as on a real host agent, so tests see the canonical
+// digests and policy refusals.
 //
 // Scriptable behaviours (Scenario fields, changeable at runtime through the
 // control methods such as Update, SetVMMSDown or SetStale):

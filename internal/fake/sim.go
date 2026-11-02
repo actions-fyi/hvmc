@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
+	"github.com/matfax/hvmc/internal/policy"
 )
 
 // Health service names (common.proto).
@@ -36,7 +37,6 @@ const DefaultAgentVersion = "v0.0.0-fake"
 // use, including while servers run.
 type Sim struct {
 	clock   Clock
-	digest  DigestFunc
 	version string
 
 	writeSem chan struct{} // the agent serializes Hyper-V writes
@@ -74,10 +74,6 @@ type Option func(*Sim)
 // WithClock sets the clock; default RealClock.
 func WithClock(c Clock) Option { return func(s *Sim) { s.clock = c } }
 
-// WithPolicyDigest sets the policy digest function; default
-// PlaceholderDigest.
-func WithPolicyDigest(f DigestFunc) Option { return func(s *Sim) { s.digest = f } }
-
 // WithAgentVersion sets the version every fake agent reports.
 func WithAgentVersion(v string) Option { return func(s *Sim) { s.version = v } }
 
@@ -93,7 +89,6 @@ func WithCertificateAuthority(pool *x509.CertPool) Option {
 func New(sc *Scenario, opts ...Option) (*Sim, error) {
 	s := &Sim{
 		clock:    RealClock(),
-		digest:   PlaceholderDigest,
 		version:  DefaultAgentVersion,
 		writeSem: make(chan struct{}, 1),
 		sc:       &Scenario{},
@@ -423,8 +418,11 @@ func (s *Sim) freeLocked() Bytes {
 	return max(free, 0)
 }
 
-func (s *Sim) digestLocked(p *agentv1.Policy) string {
-	d := s.digest(p)
+// digestLocked returns the digest the host agent reports for p: the
+// canonical digest (internal/policy), unless PolicyDigestSkew simulates an
+// agent whose digest disagrees with it, which the policy package cannot.
+func (s *Sim) digestLocked(p policy.Policy) string {
+	d := p.Digest()
 	if s.sc.Host.PolicyDigestSkew {
 		d = "skewed-" + d
 	}
@@ -445,11 +443,11 @@ func (s *Sim) liveHostLocked(at time.Time) *agentv1.Host {
 		TotalBytes:   int64(s.sc.Host.Total),
 		FreeBytes:    int64(s.freeLocked()),
 		Agent:        s.hostAgentInfo(),
-		PolicyDigest: s.digestLocked(toProtoPolicy(s.sc.Policy)),
+		PolicyDigest: s.digestLocked(s.sc.Policy.toPolicy()),
 		ObservedAt:   timestamppb.New(at),
 	}
 	if s.sc.PendingPolicy != nil {
-		h.PendingPolicyDigest = s.digestLocked(toProtoPolicy(s.sc.PendingPolicy))
+		h.PendingPolicyDigest = s.digestLocked(s.sc.PendingPolicy.toPolicy())
 	}
 	return h
 }
