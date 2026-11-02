@@ -1,0 +1,217 @@
+{
+  "Snapshot": {
+    "At": "2026-03-04T05:06:07Z",
+    "Frozen": true,
+    "HostAgentState": "Degraded",
+    "Capacity": 68719476736,
+    "Reserve": 4294967296,
+    "HostFree": 30064771072,
+    "Committed": 40802189312,
+    "InFlight": 0,
+    "Pool": 23622320128,
+    "VMs": [
+      {
+        "Name": "linux-node-1",
+        "Managed": true,
+        "Mode": "fixed",
+        "GuestOS": "linux",
+        "State": "Ready",
+        "Assigned": 8589934592,
+        "Startup": 8589934592,
+        "Dynamic": null,
+        "ObservedAt": "2026-03-04T05:06:07Z",
+        "UsedKnown": true,
+        "Used": 2147483648,
+        "Available": 6442450944,
+        "Base": 3221225472,
+        "Margin": 2147483648,
+        "Leased": 0,
+        "EffBase": 3221225472,
+        "Floor": 5368709120,
+        "Headroom": 3221225472,
+        "Committed": 8589934592
+      },
+      {
+        "Name": "vm-a",
+        "Managed": true,
+        "Mode": "static",
+        "GuestOS": "windows",
+        "State": "Ready",
+        "Assigned": 8589934592,
+        "Startup": 8589934592,
+        "Dynamic": null,
+        "ObservedAt": "2026-03-04T05:06:07Z",
+        "UsedKnown": true,
+        "Used": 3221225472,
+        "Available": 5368709120,
+        "Base": 4294967296,
+        "Margin": 2147483648,
+        "Leased": 0,
+        "EffBase": 4294967296,
+        "Floor": 6442450944,
+        "Headroom": 2147483648,
+        "Committed": 8589934592
+      },
+      {
+        "Name": "vm-b",
+        "Managed": true,
+        "Mode": "static",
+        "GuestOS": "windows",
+        "State": "Unknown",
+        "Assigned": 6442450944,
+        "Startup": 6442450944,
+        "Dynamic": null,
+        "ObservedAt": "2026-03-04T05:06:07Z",
+        "UsedKnown": true,
+        "Used": 2147483648,
+        "Available": 4294967296,
+        "Base": 3221225472,
+        "Margin": 2147483648,
+        "Leased": 0,
+        "EffBase": 3221225472,
+        "Floor": 5368709120,
+        "Headroom": 1073741824,
+        "Committed": 6442450944
+      },
+      {
+        "Name": "vm-dm",
+        "Managed": true,
+        "Mode": "dynamic",
+        "GuestOS": "windows",
+        "State": "Ready",
+        "Assigned": 6442450944,
+        "Startup": 4294967296,
+        "Dynamic": {
+          "Minimum": 4294967296,
+          "Maximum": 12884901888,
+          "Buffer": 20,
+          "Priority": 0
+        },
+        "ObservedAt": "2026-03-04T05:06:07Z",
+        "UsedKnown": true,
+        "Used": 3221225472,
+        "Available": 3221225472,
+        "Base": 2147483648,
+        "Margin": 2147483648,
+        "Leased": 0,
+        "EffBase": 3221225472,
+        "Floor": 5368709120,
+        "Headroom": 1073741824,
+        "Committed": 12884901888
+      },
+      {
+        "Name": "vm-unmanaged",
+        "Managed": false,
+        "Mode": "",
+        "GuestOS": "",
+        "State": "Unmanaged",
+        "Assigned": 4294967296,
+        "Startup": 4294967296,
+        "Dynamic": null,
+        "ObservedAt": "2026-03-04T05:06:07Z",
+        "UsedKnown": false,
+        "Used": 0,
+        "Available": 0,
+        "Base": 0,
+        "Margin": 0,
+        "Leased": 0,
+        "EffBase": 0,
+        "Floor": 0,
+        "Headroom": 0,
+        "Committed": 4294967296
+      }
+    ],
+    "Leases": [
+      {
+        "Request": {
+          "ID": "request-1",
+          "Kind": "External",
+          "VM": "vm-a",
+          "Candidates": null,
+          "Bytes": 1073741824,
+          "PriorityClass": 0,
+          "EnqueuedAt": "2026-03-04T05:06:07Z",
+          "Deadline": "0001-01-01T00:00:00Z"
+        },
+        "Phase": "Pending",
+        "Reason": "",
+        "Position": 1,
+        "Grantable": false,
+        "GrantedAt": "0001-01-01T00:00:00Z",
+        "Reservation": null
+      },
+      {
+        "Request": {
+          "ID": "request-2",
+          "Kind": "Pod",
+          "VM": "",
+          "Candidates": [
+            "linux-node-1",
+            "vm-a"
+          ],
+          "Bytes": 2147483648,
+          "PriorityClass": 0,
+          "EnqueuedAt": "2026-03-04T05:06:07Z",
+          "Deadline": "0001-01-01T00:00:00Z"
+        },
+        "Phase": "Pending",
+        "Reason": "",
+        "Position": 2,
+        "Grantable": false,
+        "GrantedAt": "0001-01-01T00:00:00Z",
+        "Reservation": null
+      }
+    ],
+    "Shrinks": null,
+    "Agents": {
+      "host": "Degraded",
+      "linux-node-1": "Ready",
+      "vm-a": "Ready",
+      "vm-b": "Degraded",
+      "vm-dm": "Ready"
+    }
+  },
+  "Evaluation": [
+    {
+      "ID": "request-1",
+      "Position": 1,
+      "Grantable": false,
+      "Fits": [
+        {
+          "VM": "vm-a",
+          "Fits": false,
+          "Delta": 0,
+          "Headroom": 0,
+          "Pool": 23622320128,
+          "Position": 1,
+          "Reason": "HostFrozen"
+        }
+      ]
+    },
+    {
+      "ID": "request-2",
+      "Position": 2,
+      "Grantable": false,
+      "Fits": [
+        {
+          "VM": "linux-node-1",
+          "Fits": false,
+          "Delta": 0,
+          "Headroom": 0,
+          "Pool": 23622320128,
+          "Position": 2,
+          "Reason": "HostFrozen"
+        },
+        {
+          "VM": "vm-a",
+          "Fits": false,
+          "Delta": 0,
+          "Headroom": 0,
+          "Pool": 23622320128,
+          "Position": 2,
+          "Reason": "HostFrozen"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+# HostConfig shared by the `hvmc plan` golden tests: a fixed Linux node, two
+# static Windows VMs (one mapped to a node, one facade-only) and a Dynamic
+# Memory VM. vm-unmanaged in the scenarios is not listed here.
+apiVersion: hvmc.fax.fyi/v1alpha1
+kind: HostConfig
+metadata:
+  name: default
+spec:
+  reserve: 4Gi
+  defaultMargin: 2Gi
+  agents:
+    - name: host
+      role: host
+      dnsName: hyperv-01.example.com
+  vms:
+    - name: linux-node-1
+      node: linux-node-1
+      guestOS: linux
+      mode: fixed
+      base: 3Gi
+    - name: vm-a
+      node: windows-node-1
+      guestOS: windows
+      mode: static
+      base: 4Gi
+      policy:
+        min: 6Gi
+        max: 24Gi
+    - name: vm-b
+      guestOS: windows
+      mode: static
+      base: 3Gi
+      guestAgent:
+        dnsName: vm-b.example.com
+    - name: vm-dm
+      guestOS: windows
+      mode: dynamic
+      base: 2Gi

@@ -4,23 +4,17 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"os"
 
-	"github.com/matfax/hvmc/internal/version"
+	"github.com/matfax/hvmc/internal/cli"
 )
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run is the entry point; it is replaced by the full command tree in WP 1.6.
+// run executes the command tree and returns the exit code.
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
-		_, _ = fmt.Fprintf(stdout, "hvmc %s\n", version.String())
-		return 0
-	}
-	_, _ = fmt.Fprintln(stderr, "usage: hvmc version")
-	return 2
+	return cli.Execute(args, stdout, stderr)
 }
