@@ -436,7 +436,11 @@ func (h *hostServer) ProposePolicy(ctx context.Context, req *agentv1.ProposePoli
 	if err := s.enter(ctx, h.name, "ProposePolicy", false); err != nil {
 		return nil, err
 	}
-	// A nil policy is the empty policy, as for the agent (policy.FromProto).
+	// An unset policy field is a caller bug, not a request to manage no VM;
+	// that takes an explicit empty Policy message (policy.proto).
+	if req.GetPolicy() == nil {
+		return nil, status.Error(codes.InvalidArgument, "policy is required")
+	}
 	pol, err := policy.FromProto(req.GetPolicy())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

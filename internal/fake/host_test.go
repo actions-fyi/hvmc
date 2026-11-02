@@ -552,9 +552,12 @@ func TestPolicyDigestsAndProposals(t *testing.T) {
 		t.Errorf("ProposePolicy calls = %d, want 8", got)
 	}
 
-	// A missing policy is the empty policy, as for policy.FromProto.
+	// An unset policy field is rejected; an explicit empty policy manages
+	// no VM.
 	empty := policy.Policy{}.Digest()
-	resp, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Digest: empty})
+	_, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Digest: empty})
+	wantCode(t, err, codes.InvalidArgument)
+	resp, err = e.host.ProposePolicy(ctx, &agentv1.ProposePolicyRequest{Policy: &agentv1.Policy{}, Digest: empty})
 	e.must(err)
 	if resp.GetPendingDigest() != empty {
 		t.Errorf("pending digest = %q, want the empty policy's %q", resp.GetPendingDigest(), empty)

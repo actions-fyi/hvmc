@@ -46,7 +46,8 @@ message VMPolicy {
 // ProposePolicyRequest carries the policy the coordinator derived from
 // HostConfig.
 message ProposePolicyRequest {
-  // The proposed policy.
+  // The proposed policy. Required: the agent refuses a request without it
+  // with INVALID_ARGUMENT. An explicit empty Policy manages no VM.
   Policy policy = 1;
   // Digest of `policy` as computed by the coordinator (internal/policy). The
   // agent recomputes it and refuses the proposal with INVALID_ARGUMENT on a
