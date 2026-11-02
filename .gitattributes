@@ -1,0 +1,3 @@
+# Check every text file out with LF on all platforms. Golden test files
+# and generated code must be byte-identical on Linux and Windows runners.
+* text=auto eol=lf

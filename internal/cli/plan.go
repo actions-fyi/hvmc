@@ -42,8 +42,10 @@ The scenario's host is the HostConfig's host agent; a guest serves the VM it
 is linked to (vm), or the VM of its own name. Without --scenario, plan
 simulates an idle host of spec.capacity with every VM at its floor.
 
---output json prints the ledger snapshot and the evaluation of every queued
-request (field names follow internal/ledger).`
+--output json prints the same as a stable JSON object for scripts: at, host,
+vms, queue (each request with its fits per candidate VM and, when it is not
+grantable, its blockingCause), agents and notes. Byte values are integers in
+fields ending in Bytes.`
 
 // planOptions are the flags of `hvmc plan`.
 type planOptions struct {

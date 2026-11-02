@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
@@ -251,4 +252,39 @@ func writeFile(t *testing.T, name, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestPlanJSONFields(t *testing.T) {
+	dir := filepath.Join("testdata", "plan")
+	code, out, errOut := runCLI(t, "plan", "-f", filepath.Join(dir, "hostconfig.yaml"),
+		"--scenario", filepath.Join(dir, "pool-blocked.yaml"), "-o", "json")
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, stderr %q", code, errOut)
+	}
+	var got struct {
+		Host struct {
+			PoolBytes int64 `json:"poolBytes"`
+		} `json:"host"`
+		Queue []struct {
+			ID            string `json:"id"`
+			BlockingCause string `json:"blockingCause"`
+		} `json:"queue"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Host.PoolBytes != 6<<30 {
+		t.Errorf("host.poolBytes = %d, want 6Gi", got.Host.PoolBytes)
+	}
+	causes := map[string]string{}
+	for _, r := range got.Queue {
+		causes[r.ID] = r.BlockingCause
+	}
+	want := map[string]string{
+		"request-6": "", "request-1": "", "request-2": "PoolShort",
+		"request-3": "", "request-4": "", "request-5": "Queued",
+	}
+	if diff := cmp.Diff(want, causes); diff != "" {
+		t.Errorf("blockingCause by request (-want +got):\n%s", diff)
+	}
 }

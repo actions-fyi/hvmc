@@ -14,15 +14,14 @@ import (
 	"github.com/matfax/hvmc/internal/ledger"
 )
 
-// planReport is the result of `hvmc plan`. Its JSON form is the ledger
-// snapshot plus the evaluation of every queued request, with the field names
-// of the ledger's Go types.
+// planReport is the result of `hvmc plan`: the ledger snapshot plus the
+// evaluation of every queued request. writeText and writeJSON render it.
 type planReport struct {
 	Snapshot   ledger.Snapshot
 	Evaluation []requestEvaluation
 	// Notes are agent calls that failed; the ledger treats their data as
 	// missing.
-	Notes []string `json:",omitempty"`
+	Notes []string
 }
 
 // requestEvaluation is ledger.Evaluate for one Pending request on each of

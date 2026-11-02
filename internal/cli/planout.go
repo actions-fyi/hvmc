@@ -16,9 +16,9 @@ import (
 // none marks a value that does not apply or is not known.
 const none = "-"
 
-// writeJSON writes the report as indented JSON.
+// writeJSON writes the report as indented JSON (planJSON).
 func writeJSON(w io.Writer, rep *planReport) error {
-	data, err := json.MarshalIndent(rep, "", "  ")
+	data, err := json.MarshalIndent(toPlanJSON(rep), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -131,20 +131,27 @@ func queueRows(ev requestEvaluation, r ledger.Request) [][]string {
 }
 
 // fitColumns are VM, FIT, DELTA, HEADROOM, POOL and REASON of one fit.
-// Delta and headroom are not computed when the ledger is frozen or the VM
-// is not a candidate.
 func fitColumns(f ledger.Fit) []string {
-	delta, headroom := formatBytes(f.Delta), formatBytes(f.Headroom)
-	switch f.Reason {
-	case ledger.ReasonHostFrozen, ledger.ReasonUnknownVM, ledger.ReasonNotCandidate:
-		delta, headroom = none, none
-	default:
+	delta, headroom := none, none
+	if fitComputed(f) {
+		delta, headroom = formatBytes(f.Delta), formatBytes(f.Headroom)
 	}
 	reason := string(f.Reason)
 	if f.Fits || reason == "" {
 		reason = none
 	}
 	return []string{string(f.VM), yesNo(f.Fits), delta, headroom, formatBytes(f.Pool), reason}
+}
+
+// fitComputed reports whether the ledger computed delta and headroom for a
+// fit: it does not when the ledger is frozen or the VM is no candidate.
+func fitComputed(f ledger.Fit) bool {
+	switch f.Reason {
+	case ledger.ReasonHostFrozen, ledger.ReasonUnknownVM, ledger.ReasonNotCandidate:
+		return false
+	default:
+		return true
+	}
 }
 
 func writeNotes(b *strings.Builder, notes []string) {
