@@ -251,7 +251,7 @@ vms:
     max: 32Gi
 ```
 
-Reads (`ListVMs`, `WatchVMs`) cover all VMs (the pool needs them); writes are allowed only for listed VMs within `[min, max]`. `GetHost` returns the canonical digest of the active policy (`internal/policy`, the same function the coordinator uses); a mismatch with the digest of the policy derived from HostConfig sets `PolicyInSync=False` and the coordinator proposes the derived policy.
+Reads (`ListVMs`, `WatchVMs`) cover all VMs (the pool needs them); writes are allowed only for listed VMs within `[min, max]`. The policy derived from HostConfig (`internal/policy`) lists every managed VM: `fixed` VMs read-only; `static`/`dynamic` VMs with a `policy` writable within `[policy.min, policy.max]`; `static`/`dynamic` VMs without a `policy` (admission-only, probe VMs) writable within `[base, capacity − reserve]`, where capacity is `spec.capacity` or, when that is 0, the capacity the coordinator has observed (unbounded only until the host has been observed once — the first observation therefore produces a new proposal). Operators who want tighter bounds without the reconciler give the VM a `policy` with `grow: false, shrink: false`. Lease grows on a VM never exceed its policy maximum, because the agent refuses them. `GetHost` returns the canonical digest of the active policy (`internal/policy`, the same function the coordinator uses); a mismatch with the digest of the policy derived from HostConfig sets `PolicyInSync=False` and the coordinator proposes the derived policy.
 
 ### 4.4 Guest agent API (`hvmc.agent.v1.GuestAgent`) and verification
 
