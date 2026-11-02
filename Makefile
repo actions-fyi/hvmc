@@ -109,7 +109,11 @@ $(CT_DIR)/venv/.installed: hack/chart-testing/requirements.txt
 ct-lint: $(CT_DIR)/venv/.installed ## Run chart-testing lint (yamllint, yamale, helm lint) on the chart.
 	@mkdir -p $(CT_DIR)/bin
 	@printf '#!/bin/sh\nexec %s "$$@"\n' '$(HELM)' >$(CT_DIR)/bin/helm && chmod +x $(CT_DIR)/bin/helm
+	@# go list -m reports no Dir for a module that is not in the module cache
+	@# yet (a fresh CI runner), so download it first.
+	@cd tools && $(GO) mod download github.com/helm/chart-testing/v3
 	@etc="$$(cd tools && $(GO) list -m -f '{{.Dir}}' github.com/helm/chart-testing/v3)/etc" && \
+		test -f "$$etc/chart_schema.yaml" || { echo "chart-testing etc/ not found at $$etc" >&2; exit 1; }; \
 		PATH="$(CT_DIR)/bin:$(CT_DIR)/venv/bin:$$PATH" $(TOOL) ct lint --config hack/chart-testing/ct.yaml \
 			--lint-conf "$$etc/lintconf.yaml" --chart-yaml-schema "$$etc/chart_schema.yaml" \
 			--helm-lint-extra-args "--strict --kube-version $(HELM_KUBE_VERSION)"
