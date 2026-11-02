@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,17 +27,26 @@ const (
 )
 
 // cases are the values files the chart is rendered with. Every case has
-// testdata/<name>.golden.yaml (manifests) and testdata/<name>.notes.txt.
+// testdata/<name>.golden.yaml (manifests without the CRDs) and
+// testdata/<name>.notes.txt.
+//
+// The CRDs are left out of the golden files: they are copies of
+// config/crd/bases (hack/chart-crds.sh, checked by CI's generated-code
+// check), and would make up most of every golden file. checkCRDs covers what
+// the chart adds to them.
 var cases = []struct {
 	name   string
 	values string // relative to this directory; "" for the chart defaults
+	// keepCRDs, when set, checks that both CRDs render and whether they
+	// carry helm.sh/resource-policy: keep.
+	keepCRDs *bool
 }{
-	{name: "default"},
+	{name: "default", keepCRDs: new(false)},
 	// Ingress with host, class, annotations and TLS; every kind of VM.
 	{name: "ingress", values: chartDir + "/ci/ci-values.yaml"},
 	{name: "ingress-off", values: "testdata/ingress-off.values.yaml"},
 	{name: "loadbalancer", values: "testdata/loadbalancer.values.yaml"},
-	{name: "crds-keep", values: "testdata/crds-keep.values.yaml"},
+	{name: "crds-keep", values: "testdata/crds-keep.values.yaml", keepCRDs: new(true)},
 	{name: "hostconfig-existing", values: "testdata/hostconfig-existing.values.yaml"},
 	// ServiceMonitor on, NetworkPolicies off, scheduling and image overrides.
 	{name: "options", values: "testdata/options.values.yaml"},
@@ -60,8 +71,11 @@ func TestGolden(t *testing.T) {
 				args = append(args, "--values", tc.values)
 				track(t, tc.values)
 			}
-			manifests := h.run(t, append([]string{"template", release, chartDir}, args...)...)
+			manifests, crds := splitCRDs(h.run(t, append([]string{"template", release, chartDir}, args...)...))
 			compare(t, "testdata/"+tc.name+".golden.yaml", manifests)
+			if tc.keepCRDs != nil {
+				checkCRDs(t, crds, *tc.keepCRDs)
+			}
 
 			out := h.run(t, append([]string{
 				"template", release, notesChart, "--show-only", "templates/" + notesManifest,
@@ -73,6 +87,49 @@ func TestGolden(t *testing.T) {
 			}
 			compare(t, "testdata/"+tc.name+".notes.txt", []byte(notes+"\n"))
 		})
+	}
+}
+
+var (
+	crdKind         = regexp.MustCompile(`(?m)^kind: CustomResourceDefinition$`)
+	crdName         = regexp.MustCompile(`(?m)^  name: (\S+)$`)
+	keepAnnotation  = regexp.MustCompile(`(?m)^    helm\.sh/resource-policy: keep$`)
+	wantCRDNames    = []string{"hostconfigs.hvmc.fax.fyi", "memoryleases.hvmc.fax.fyi"}
+	documentDivider = "---\n"
+)
+
+// splitCRDs splits helm template output into the manifests without the
+// CustomResourceDefinitions and the CRD documents.
+func splitCRDs(out []byte) (manifests []byte, crds []string) {
+	var keep []string
+	for doc := range strings.SplitSeq(string(out), documentDivider) {
+		if crdKind.MatchString(doc) {
+			crds = append(crds, doc)
+			continue
+		}
+		keep = append(keep, doc)
+	}
+	return []byte(strings.Join(keep, documentDivider)), crds
+}
+
+// checkCRDs checks that both CRDs rendered, with the keep resource policy
+// exactly when crds.keep is set.
+func checkCRDs(t *testing.T, crds []string, keep bool) {
+	t.Helper()
+	var names []string
+	for _, doc := range crds {
+		m := crdName.FindStringSubmatch(doc)
+		if m == nil {
+			t.Fatalf("CRD without metadata.name:\n%s", doc)
+		}
+		names = append(names, m[1])
+		if got := keepAnnotation.MatchString(doc); got != keep {
+			t.Errorf("CRD %s: helm.sh/resource-policy: keep present = %t, want %t", m[1], got, keep)
+		}
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, wantCRDNames) {
+		t.Errorf("rendered CRDs = %v, want %v", names, wantCRDNames)
 	}
 }
 
