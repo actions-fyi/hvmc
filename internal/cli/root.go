@@ -95,7 +95,7 @@ func newRootCommand(e env) *cobra.Command {
 		newPlanCommand(e),
 		newCheckCommand(),
 		newTestCommand(),
-		newCACommand(),
+		newCACommand(kubeReader),
 		newTokenCommand(),
 	)
 	return root

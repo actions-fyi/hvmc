@@ -69,12 +69,6 @@ func newTestCommand() *cobra.Command {
 	)
 }
 
-func newCACommand() *cobra.Command {
-	return group("ca", "Inspect the hvmc certificate authority",
-		stub("export", "Print the CA certificate and its SHA-256 fingerprint"),
-	)
-}
-
 func newTokenCommand() *cobra.Command {
 	create := stub("create", "Re-issue a bootstrap token for an agent")
 	create.Flags().String("agent", "", "agent name")
