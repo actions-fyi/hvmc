@@ -43,12 +43,12 @@ hostConfig:
   # Age after which agent data is treated as missing.
   staleAfter: 30s
   # The host agent, e.g.
-  #   - name: host
+  #   - name: host           # DNS-1123 label
   #     dnsName: hyperv-01.example.com
   #     port: 9443           # optional, default 9443
   agents: []
   # Every VM the ledger manages; each gets a guest agent. E.g.
-  #   - name: linux-node-1   # Hyper-V VM name
+  #   - name: linux-node-1   # Hyper-V VM name, a DNS-1123 label
   #     node: linux-node-1   # Kubernetes node name (enables the extender)
   #     guestOS: linux       # linux | windows
   #     mode: fixed          # fixed | static | dynamic; linux -> fixed

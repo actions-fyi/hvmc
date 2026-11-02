@@ -375,9 +375,10 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Agent name; its bootstrap token Secret is hvmc-bootstrap-<name>.",
+          "description": "Agent name, a DNS-1123 label; its bootstrap token Secret is hvmc-bootstrap-<name>.",
           "minLength": 1,
-          "maxLength": 63
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
         "role": {
           "type": "string",
@@ -458,9 +459,10 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "Hyper-V VM name.",
+          "description": "Hyper-V VM name, a DNS-1123 label; it also names the guest agent and its Secret hvmc-bootstrap-<name>.",
           "minLength": 1,
-          "maxLength": 253
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
         "node": {
           "type": "string",

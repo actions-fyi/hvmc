@@ -306,6 +306,38 @@ func TestHostConfigValidation(t *testing.T) {
 			return hc
 		}},
 
+		// VM and agent names are DNS-1123 labels
+		{name: "vm name label", obj: func() *v1alpha1.HostConfig {
+			v := windowsVM(v1alpha1.VMModeStatic)
+			v.Name = "docker-host-1"
+			return withVM(v)
+		}},
+		{name: "vm name uppercase", want: "spec.vms[0].name: Invalid value", obj: func() *v1alpha1.HostConfig {
+			v := windowsVM(v1alpha1.VMModeStatic)
+			v.Name = "Docker-Host-1"
+			return withVM(v)
+		}},
+		{name: "vm name with space", want: "spec.vms[0].name: Invalid value", obj: func() *v1alpha1.HostConfig {
+			v := windowsVM(v1alpha1.VMModeStatic)
+			v.Name = "docker host"
+			return withVM(v)
+		}},
+		{name: "vm name too long", want: "spec.vms[0].name: Too long", obj: func() *v1alpha1.HostConfig {
+			v := windowsVM(v1alpha1.VMModeStatic)
+			v.Name = strings.Repeat("a", 64)
+			return withVM(v)
+		}},
+		{name: "agent name with dot", want: "spec.agents[0].name: Invalid value", obj: func() *v1alpha1.HostConfig {
+			hc := validHostConfig()
+			hc.Spec.Agents[0].Name = "hyperv-01.example.com"
+			return hc
+		}},
+		{name: "agent name trailing dash", want: "spec.agents[0].name: Invalid value", obj: func() *v1alpha1.HostConfig {
+			hc := validHostConfig()
+			hc.Spec.Agents[0].Name = "host-"
+			return hc
+		}},
+
 		// enums
 		{name: "guestOS unknown", want: "spec.vms[0].guestOS: Unsupported value", obj: func() *v1alpha1.HostConfig {
 			v := windowsVM(v1alpha1.VMModeStatic)
