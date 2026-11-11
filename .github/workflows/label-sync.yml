@@ -1,0 +1,21 @@
+name: Sync
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/labels.yml
+      - .github/workflows/label-sync.yml
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  labels:
+    name: Labels
+    # What the labels job of _label-sync.yml declares; a called job can't get more.
+    permissions:
+      contents: read # Check out the label config
+      issues: write # Create and update labels
+    uses: actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v0.15.0

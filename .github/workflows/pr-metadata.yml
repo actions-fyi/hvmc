@@ -1,0 +1,26 @@
+name: PR Metadata
+# Check Metadata is the org ruleset workflow that checks the title. Its runs on pull requests start
+# this listener, which runs with the secrets and a write token, for fork pull requests too.
+on:
+  workflow_run:
+    workflows: ["Check Metadata"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  metadata:
+    name: Metadata
+    cache-mode: none
+    permissions:
+      actions: write # Re-run the failed Check Metadata jobs
+      contents: read # Check out the default branch for the screen jobs
+      id-token: write # Log in to OpenBao for Prompt Guard
+      issues: write # Read the repository's labels, label the pull request, and escalate a flag
+      pull-requests: write # Read the pull request; apply the title, labels and description
+    uses: actions-fyi/shared-workflows/.github/workflows/_pr-metadata.yml@v0.15.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
