@@ -1,0 +1,30 @@
+name: Claude
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  claude:
+    name: Claude
+    cache-mode: none
+    # The union of what the jobs of _claude.yml declare; a called job can't get more.
+    permissions:
+      actions: read # Read CI results on pull requests
+      contents: read # Check out the repository
+      id-token: write # Log in to OpenBao for Prompt Guard, and sign in to the Claude GitHub App
+      issues: write # Comment on issues, and escalate a flag
+      pull-requests: write # Comment on and open pull requests, and escalate a flag
+    uses: actions-fyi/shared-workflows/.github/workflows/_claude.yml@v0.15.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
