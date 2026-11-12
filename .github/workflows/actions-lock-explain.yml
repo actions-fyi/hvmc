@@ -1,0 +1,22 @@
+name: Explain Actions Lockfile
+# "Check Actions Lockfile" is the org ruleset workflow on pull requests, and actions-lock-push.yml on
+# main; this listener reports their failures and resolves the reports when they pass.
+on:
+  workflow_run:
+    workflows: ["Check Actions Lockfile"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  explain:
+    name: Explain
+    cache-mode: none
+    permissions:
+      actions: read # Read the run's jobs and download their logs
+      contents: read # Check out the default branch for the screen job
+      issues: write # Open, comment on and close the issue of a failure on main
+      pull-requests: write # Find the pull request; create, update and minimize the comment
+    uses: actions-fyi/shared-workflows/.github/workflows/_explain.yml@v0.15.0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
