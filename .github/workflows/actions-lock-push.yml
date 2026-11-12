@@ -1,0 +1,18 @@
+name: Check Actions Lockfile
+# Checks the actions lockfile after pushes to main. Pull requests and merge groups are covered by
+# the org ruleset workflow of the same name.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  actions-lock:
+    name: Actions Lockfile
+    # The union of what the jobs of _actions-lock.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Compare the changes and read the workflows
+      id-token: write # Exchange the fix job's OIDC token with Octo STS
+    uses: actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@v0.15.0
