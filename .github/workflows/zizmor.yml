@@ -1,0 +1,18 @@
+name: Audit
+# Audits pushes to main. Pull requests and merge groups are covered by the org ruleset workflow
+# Audit GitHub Actions of actions-fyi/ruleset-workflows.
+on:
+  push:
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: zizmor
+    # What the zizmor job of _zizmor.yml declares; a called job can't get more.
+    permissions:
+      security-events: write # Upload the SARIF results to code scanning
+      contents: read # Check out the repository
+      actions: read # Let upload-sarif read the workflow run
+    uses: actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v0.15.0
