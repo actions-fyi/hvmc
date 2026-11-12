@@ -1,0 +1,63 @@
+# Queue blocked on the pool: the same VMs as idle.yaml on a 48Gi host.
+# Free: 48 - 4 - 32 = 12Gi; pool: min(48 - 4 - 38, 12 - 4) = 6Gi.
+#
+# Queue order: request-6 (priorityClass 10) first, then file order.
+#   request-6 fits in vm-a's headroom (2Gi) without a resize.
+#   request-1 grows vm-a by 3Gi from the pool (6Gi -> 3Gi left).
+#   request-2 needs 7Gi on vm-b: PoolShort; it locks the pool and vm-b.
+#   request-3 (pod) is queued behind the pool lock on vm-a, but fits in
+#             vm-dm's headroom without a resize.
+#   request-4 (pod) fits in the fixed linux-node-1's headroom.
+#   request-5 waits: vm-b is locked by request-2.
+host:
+  name: hyperv-1
+  total: 48Gi
+  overhead: 4Gi
+vms:
+  - name: linux-node-1
+    startup: 8Gi
+  - name: vm-a
+    startup: 8Gi
+  - name: vm-b
+    startup: 6Gi
+  - name: vm-dm
+    startup: 4Gi
+    assigned: 6Gi
+    dynamicMemory:
+      minimum: 4Gi
+      maximum: 12Gi
+  - name: vm-unmanaged
+    startup: 4Gi
+guests:
+  - name: linux-node-1
+    vm: linux-node-1
+    used: 2Gi
+  - name: vm-a
+    vm: vm-a
+    os: windows
+    used: 3Gi
+    pageFile: 2Gi
+  - name: vm-b
+    vm: vm-b
+    os: windows
+    used: 2Gi
+  - name: vm-dm
+    vm: vm-dm
+    os: windows
+    used: 3Gi
+requests:
+  - vm: vm-a
+    bytes: 4Gi
+  - vm: vm-b
+    bytes: 8Gi
+  - kind: Pod
+    candidateVMs: [vm-a, vm-dm]
+    bytes: 1Gi
+  - kind: Pod
+    candidateVMs: [linux-node-1]
+    bytes: 2Gi
+  - vm: vm-b
+    bytes: 512Mi
+  - vm: vm-a
+    bytes: 1Gi
+    priorityClass: 10

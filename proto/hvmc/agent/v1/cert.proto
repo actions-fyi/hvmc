@@ -1,0 +1,57 @@
+// Certificate renewal API (DESIGN §4.6). Served by every agent, host and
+// guest. See common.proto for the error model.
+syntax = "proto3";
+
+package hvmc.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1;agentv1";
+
+// CertificateService renews an agent's serving certificate over the existing
+// mTLS channel, driven by the coordinator (at 2/3 of the leaf's lifetime):
+// RotateCertificate → the coordinator signs the CSR → InstallCertificate.
+// The private key never leaves the agent.
+service CertificateService {
+  // RotateCertificate makes the agent generate a new private key, keep it as
+  // pending and return a CSR for it. The CSR's subject and SANs are those of
+  // the agent's current certificate. Calling it again replaces the pending
+  // key; only the newest pending key can be installed.
+  //
+  // Errors: INTERNAL (key generation or storage failed).
+  rpc RotateCertificate(RotateCertificateRequest) returns (RotateCertificateResponse);
+
+  // InstallCertificate installs a certificate for the pending key. The agent
+  // swaps key and certificate atomically for new connections and keeps the
+  // previous pair until the next successful handshake with the new one, so a
+  // bad certificate can be rolled back.
+  //
+  // Errors: INVALID_ARGUMENT (empty or unparsable chain, chain not verifying
+  // against the hvmc CA, not a serving certificate), FAILED_PRECONDITION (no
+  // pending key, or the leaf's public key is not the pending key), INTERNAL
+  // (storing the pair failed; the current pair stays active).
+  rpc InstallCertificate(InstallCertificateRequest) returns (InstallCertificateResponse);
+}
+
+// RotateCertificateRequest is empty.
+message RotateCertificateRequest {}
+
+// RotateCertificateResponse carries the CSR for the new key.
+message RotateCertificateResponse {
+  // PKCS #10 certificate signing request, DER-encoded, signed with the new
+  // pending key (ECDSA P-256).
+  bytes csr_der = 1;
+}
+
+// InstallCertificateRequest carries the signed certificate.
+message InstallCertificateRequest {
+  // DER-encoded X.509 certificates: the leaf for the pending key first, then
+  // any intermediates. The hvmc CA certificate itself may be omitted.
+  repeated bytes certificate_chain_der = 1;
+}
+
+// InstallCertificateResponse confirms the installation.
+message InstallCertificateResponse {
+  // NotAfter of the installed leaf, as parsed by the agent.
+  google.protobuf.Timestamp not_after = 1;
+}

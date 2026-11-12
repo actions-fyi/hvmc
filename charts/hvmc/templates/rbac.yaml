@@ -1,0 +1,89 @@
+{{- /*
+Coordinator RBAC: the M2 subset of DESIGN §11. Cluster-wide only what is
+cluster-scoped or recorded outside the release namespace; everything else is a
+Role in the release namespace. Scheduling (pods/binding, the webhook
+configuration) is added with the extender and webhook.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hvmc-coordinator
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+rules:
+  # Node InternalIP is the address of node-mapped guest agents (DESIGN §4.7).
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  # Events about cluster-scoped objects (HostConfig, Nodes) are recorded in the
+  # "default" namespace; patch lets the recorder aggregate repeated events.
+  - apiGroups: ["", events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  # Finalizers: owner references with blockOwnerDeletion to HostConfig
+  # (DESIGN §11 cleanup).
+  - apiGroups: [hvmc.fax.fyi]
+    resources:
+      - hostconfigs
+      - hostconfigs/status
+      - hostconfigs/finalizers
+      - memoryleases
+      - memoryleases/status
+      - memoryleases/finalizers
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hvmc-coordinator
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hvmc-coordinator
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-coordinator
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hvmc-coordinator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+rules:
+  # Agent service entries (DESIGN §4.7), hvmc-ca, bootstrap tokens,
+  # hvmc-ca-bundle and the chart-rendered hvmc-hostconfig (DESIGN §4.6, §5).
+  - apiGroups: [""]
+    resources: [services, secrets, configmaps]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The leader labels its own pod hvmc.fax.fyi/leader=true (DESIGN §6).
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, patch]
+  # Leader election (DESIGN §6).
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hvmc-coordinator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hvmc-coordinator
+subjects:
+  - kind: ServiceAccount
+    name: hvmc-coordinator
+    namespace: {{ .Release.Namespace }}

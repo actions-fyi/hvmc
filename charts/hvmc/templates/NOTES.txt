@@ -1,0 +1,100 @@
+{{- $ns := .Release.Namespace -}}
+{{- $version := include "hvmc.version" . -}}
+{{- $release := printf "https://github.com/matfax/hvmc/releases/download/v%s" $version -}}
+{{- $enroll := include "hvmc.enrollURL" . -}}
+{{- $ing := .Values.facade.ingress -}}
+{{- $lb := eq .Values.facade.service.type "LoadBalancer" -}}
+hvmc {{ $version }} is installed in namespace {{ $ns }}.
+
+The coordinator runs as Deployment hvmc-coordinator ({{ .Values.replicas }} replicas); the
+leader carries the label hvmc.fax.fyi/leader=true.
+{{ if .Values.hostConfig.existing }}
+HostConfig "default" is managed outside the chart (hostConfig.existing=true).
+{{- else }}
+The coordinator applies HostConfig "default" from ConfigMap hvmc-hostconfig
+(values.hostConfig).
+{{- end }}
+
+1. Enrollment endpoint
+{{- if $enroll }}
+
+   {{ $enroll }}
+{{- else if $ing.enabled }}
+
+   {{ ternary "https" "http" (not (empty $ing.tls)) }}://<ingress address>/v1/enroll   (no facade.ingress.host set)
+   Ingress address: kubectl -n {{ $ns }} get ingress hvmc-facade -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+{{- else if $lb }}
+
+   http://<load balancer address>:{{ .Values.facade.service.port }}/v1/enroll
+   Load balancer address: kubectl -n {{ $ns }} get service hvmc-facade -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+{{- else }}
+
+   NOT REACHABLE from outside the cluster: agents cannot enroll. Set
+   facade.ingress.enabled=true or facade.service.type=LoadBalancer.
+{{- end }}
+{{- if and (or $ing.enabled $lb) (not (and $ing.enabled $ing.tls)) }}
+
+   WARNING: the endpoint is plain HTTP, so bootstrap tokens cross the network
+   unencrypted. Configure facade.ingress.tls.
+{{- end }}
+{{- $url := $enroll | default "<enrollment URL>" }}
+
+2. CA fingerprint (the same for every agent, which pins it):
+
+   kubectl -n {{ $ns }} exec deploy/hvmc-coordinator -- hvmc ca export
+
+3. Agents. Run each install command as Administrator (Windows) or root (Linux)
+   on the machine named in its heading. Replace <token> with the output of the
+   kubectl line (bootstrap tokens are single-use, valid 24 h and re-created
+   until the agent has enrolled) and <fingerprint> with the fingerprint from 2.
+{{- if .Values.hostConfig.existing }}
+
+   For every agent <name> in HostConfig "default" (the host agent and one
+   guest agent per VM):
+
+   token:   kubectl -n {{ $ns }} get secret hvmc-bootstrap-<name> -o go-template='{{ "{{.data.token | base64decode}}" }}'
+   Windows: {{ $release }}/hvmc_{{ $version }}_windows_amd64.zip
+            .\hvmc.exe agent install --role host|guest --enroll {{ $url }} --token <token> --ca-sha256 <fingerprint>
+   Linux:   {{ $release }}/hvmc_{{ $version }}_linux_amd64.tar.gz
+            ./hvmc agent install --role guest --enroll {{ $url }} --token <token> --ca-sha256 <fingerprint>
+{{- else if not (or .Values.hostConfig.agents .Values.hostConfig.vms) }}
+
+   No agents are declared yet: add the host agent to hostConfig.agents and
+   the managed VMs to hostConfig.vms, then run helm upgrade.
+{{- else }}
+{{- range .Values.hostConfig.agents }}
+
+   == Host agent "{{ .name }}" on {{ .dnsName }} (Windows, elevated PowerShell)
+   token: kubectl -n {{ $ns }} get secret hvmc-bootstrap-{{ .name }} -o go-template='{{ "{{.data.token | base64decode}}" }}'
+
+     Invoke-WebRequest -Uri {{ $release }}/hvmc_{{ $version }}_windows_amd64.zip -OutFile hvmc.zip
+     Expand-Archive -Path hvmc.zip -DestinationPath hvmc
+     .\hvmc\hvmc.exe agent install --role host --enroll {{ $url }} --token <token> --ca-sha256 <fingerprint>
+{{- end }}
+{{- range .Values.hostConfig.vms }}
+{{- $on := .node | default (dig "guestAgent" "dnsName" "" .) }}
+
+{{- if eq .guestOS "windows" }}
+
+   == Guest agent "{{ .name }}"{{ with $on }} on {{ . }}{{ end }} (Windows, elevated PowerShell)
+   token: kubectl -n {{ $ns }} get secret hvmc-bootstrap-{{ .name }} -o go-template='{{ "{{.data.token | base64decode}}" }}'
+
+     Invoke-WebRequest -Uri {{ $release }}/hvmc_{{ $version }}_windows_amd64.zip -OutFile hvmc.zip
+     Expand-Archive -Path hvmc.zip -DestinationPath hvmc
+     .\hvmc\hvmc.exe agent install --role guest --enroll {{ $url }} --token <token> --ca-sha256 <fingerprint>
+{{- else }}
+
+   == Guest agent "{{ .name }}"{{ with $on }} on {{ . }}{{ end }} (Linux, root shell)
+   token: kubectl -n {{ $ns }} get secret hvmc-bootstrap-{{ .name }} -o go-template='{{ "{{.data.token | base64decode}}" }}'
+
+     curl -fsSLO {{ $release }}/hvmc_{{ $version }}_linux_amd64.tar.gz
+     tar -xzf hvmc_{{ $version }}_linux_amd64.tar.gz hvmc
+     ./hvmc agent install --role guest --enroll {{ $url }} --token <token> --ca-sha256 <fingerprint>
+{{- end }}
+{{- end }}
+{{- end }}
+
+4. Watch the agents become Ready:
+
+   kubectl get hostconfig default --watch
+   kubectl get hostconfig default -o jsonpath='{range .status.agents[*]}{.name}{"\t"}{.state}{"\n"}{end}'

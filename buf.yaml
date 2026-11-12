@@ -1,0 +1,17 @@
+# buf configuration for the agent wire API (proto/hvmc/agent/v1).
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    # HostAgent and GuestAgent are the service names of the health contract
+    # (grpc.health.v1, DESIGN §4.8), so they keep their names without the
+    # "Service" suffix.
+    SERVICE_SUFFIX:
+      - proto/hvmc/agent/v1/host.proto
+      - proto/hvmc/agent/v1/guest.proto
+breaking:
+  use:
+    - FILE

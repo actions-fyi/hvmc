@@ -1,0 +1,5 @@
+~ docker-host-1: min 4Gi -> 4608Mi, max 32Gi -> 16Gi
+~ linux-node-1: access read-only -> writable, min none -> 4Gi, max none -> 8Gi
++ probe-1: writable, min 2Gi, max unbounded
+~ windows-node-1: max 24Gi -> 32Gi
++ windows-node-2: read-only (fixed)

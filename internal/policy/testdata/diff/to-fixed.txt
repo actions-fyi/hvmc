@@ -1,0 +1,1 @@
+~ windows-node-1: access writable -> read-only, min 6Gi -> none, max 24Gi -> none

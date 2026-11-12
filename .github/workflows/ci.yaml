@@ -1,0 +1,106 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: linux (test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - name: Generated code is up to date
+        # Covers controller-gen and buf (make generate runs make proto); new
+        # untracked files count as a difference too.
+        run: |
+          make generate
+          git add --intent-to-add .
+          git diff --exit-code
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+      - name: Helm chart (lint, golden tests)
+        run: make helm-lint
+      - name: Envtest binaries
+        run: make envtest
+      - name: Test (unit and envtest)
+        run: make test
+      - name: Ledger coverage (>= 95 %)
+        run: make test-ledger-coverage
+      - name: Build
+        run: make build build-agent-linux build-agent-windows
+      - name: Build image (no push)
+        run: make ko-build
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - name: golangci-lint
+        run: make lint-go
+      - name: buf lint
+        run: make lint-proto
+      - name: ct lint
+        run: make ct-lint
+      - name: buf breaking (against main)
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if ! git ls-tree -r --name-only FETCH_HEAD -- proto | grep -q '\.proto$'; then
+            echo "main has no proto files yet; skipping buf breaking"
+            exit 0
+          fi
+          against="$RUNNER_TEMP/buf-against"
+          mkdir -p "$against"
+          git archive FETCH_HEAD | tar -x -C "$against"
+          make proto-breaking BUF_AGAINST="$against"
+
+  windows:
+    name: windows (test)
+    runs-on: windows-2025
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...

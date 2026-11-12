@@ -1,0 +1,47 @@
+# Frozen ledger: the idle host, but its host agent reports NOT_SERVING
+# (Degraded), so nothing is granted (DESIGN §4.8). vm-b's guest agent is
+# NOT_SERVING too, so vm-b is Unknown.
+host:
+  name: hyperv-1
+  total: 64Gi
+  overhead: 4Gi
+  notServing: true
+vms:
+  - name: linux-node-1
+    startup: 8Gi
+  - name: vm-a
+    startup: 8Gi
+  - name: vm-b
+    startup: 6Gi
+  - name: vm-dm
+    startup: 4Gi
+    assigned: 6Gi
+    dynamicMemory:
+      minimum: 4Gi
+      maximum: 12Gi
+  - name: vm-unmanaged
+    startup: 4Gi
+guests:
+  - name: linux-node-1
+    vm: linux-node-1
+    used: 2Gi
+  - name: vm-a
+    vm: vm-a
+    os: windows
+    used: 3Gi
+    pageFile: 2Gi
+  - name: vm-b
+    vm: vm-b
+    os: windows
+    used: 2Gi
+    notServing: true
+  - name: vm-dm
+    vm: vm-dm
+    os: windows
+    used: 3Gi
+requests:
+  - vm: vm-a
+    bytes: 1Gi
+  - kind: Pod
+    candidateVMs: [linux-node-1, vm-a]
+    bytes: 2Gi

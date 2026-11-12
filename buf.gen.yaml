@@ -1,0 +1,14 @@
+# Generates Go code for the agent wire API into internal/agentapi/.
+# Plugins run as local Go tools pinned in tools/go.mod, so generation needs
+# neither network access nor the Buf Schema Registry. Run from the repository
+# root (`make proto`).
+version: v2
+plugins:
+  - local: ["go", "tool", "-modfile=tools/go.mod", "protoc-gen-go"]
+    out: internal/agentapi
+    opt:
+      - paths=source_relative
+  - local: ["go", "tool", "-modfile=tools/go.mod", "protoc-gen-go-grpc"]
+    out: internal/agentapi
+    opt:
+      - paths=source_relative

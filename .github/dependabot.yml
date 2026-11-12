@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      tools:
+        patterns:
+          - "*"
+  - package-ecosystem: pip
+    # yamllint and yamale for ct lint (hash-pinned requirements.txt).
+    directory: /hack/chart-testing
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      chart-testing:
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

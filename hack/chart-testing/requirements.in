@@ -1,0 +1,7 @@
+# Python tools chart-testing (ct lint) runs: yamllint for Chart.yaml and the
+# values files, yamale for the Chart.yaml schema. Pinned with hashes in
+# requirements.txt; regenerate with
+#   uv pip compile --generate-hashes --universal --python-version 3.10 \
+#     hack/chart-testing/requirements.in -o hack/chart-testing/requirements.txt
+yamllint==1.38.0
+yamale==6.1.0

@@ -1,0 +1,43 @@
+hvmc 0.0.0-dev is installed in namespace hvmc.
+
+The coordinator runs as Deployment hvmc-coordinator (2 replicas); the
+leader carries the label hvmc.fax.fyi/leader=true.
+
+The coordinator applies HostConfig "default" from ConfigMap hvmc-hostconfig
+(values.hostConfig).
+
+1. Enrollment endpoint
+
+   http://<load balancer address>:443/v1/enroll
+   Load balancer address: kubectl -n hvmc get service hvmc-facade -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+
+   WARNING: the endpoint is plain HTTP, so bootstrap tokens cross the network
+   unencrypted. Configure facade.ingress.tls.
+
+2. CA fingerprint (the same for every agent, which pins it):
+
+   kubectl -n hvmc exec deploy/hvmc-coordinator -- hvmc ca export
+
+3. Agents. Run each install command as Administrator (Windows) or root (Linux)
+   on the machine named in its heading. Replace <token> with the output of the
+   kubectl line (bootstrap tokens are single-use, valid 24 h and re-created
+   until the agent has enrolled) and <fingerprint> with the fingerprint from 2.
+
+   == Host agent "host" on hyperv-01.example.com (Windows, elevated PowerShell)
+   token: kubectl -n hvmc get secret hvmc-bootstrap-host -o go-template='{{.data.token | base64decode}}'
+
+     Invoke-WebRequest -Uri https://github.com/matfax/hvmc/releases/download/v0.0.0-dev/hvmc_0.0.0-dev_windows_amd64.zip -OutFile hvmc.zip
+     Expand-Archive -Path hvmc.zip -DestinationPath hvmc
+     .\hvmc\hvmc.exe agent install --role host --enroll <enrollment URL> --token <token> --ca-sha256 <fingerprint>
+
+   == Guest agent "windows-node-1" on windows-node-1 (Windows, elevated PowerShell)
+   token: kubectl -n hvmc get secret hvmc-bootstrap-windows-node-1 -o go-template='{{.data.token | base64decode}}'
+
+     Invoke-WebRequest -Uri https://github.com/matfax/hvmc/releases/download/v0.0.0-dev/hvmc_0.0.0-dev_windows_amd64.zip -OutFile hvmc.zip
+     Expand-Archive -Path hvmc.zip -DestinationPath hvmc
+     .\hvmc\hvmc.exe agent install --role guest --enroll <enrollment URL> --token <token> --ca-sha256 <fingerprint>
+
+4. Watch the agents become Ready:
+
+   kubectl get hostconfig default --watch
+   kubectl get hostconfig default -o jsonpath='{range .status.agents[*]}{.name}{"\t"}{.state}{"\n"}{end}'

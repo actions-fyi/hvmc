@@ -1,0 +1,238 @@
+{{- /* Generated from config/crd/bases/hvmc.fax.fyi_memoryleases.yaml by make manifests. DO NOT EDIT. */}}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.23.0
+  labels:
+    {{- include "hvmc.labels" . | nindent 4 }}
+  name: memoryleases.hvmc.fax.fyi
+spec:
+  group: hvmc.fax.fyi
+  names:
+    categories:
+    - hvmc
+    kind: MemoryLease
+    listKind: MemoryLeaseList
+    plural: memoryleases
+    singular: memorylease
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.vm
+      name: VM
+      type: string
+    - jsonPath: .spec.bytes
+      name: Bytes
+      type: string
+    - jsonPath: .spec.owner.kind
+      name: Owner
+      type: string
+    - jsonPath: .spec.priorityClass
+      name: Priority
+      priority: 1
+      type: integer
+    - jsonPath: .status.reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .status.expiresAt
+      name: Expires
+      priority: 1
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MemoryLease is a lease of memory on a VM of the host. It is the single
+          source of truth for the ledger (DESIGN §3.5).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the request.
+            properties:
+              bytes:
+                anyOf:
+                - type: integer
+                - type: string
+                description: bytes is the leased amount of memory.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+                x-kubernetes-validations:
+                - message: must be positive
+                  rule: quantity(string(self)).isGreaterThan(quantity('0'))
+              candidateVMs:
+                description: |-
+                  candidateVMs are the VMs of the filter's node list (pod leases). They
+                  decide head-of-line blocking in the queue (DESIGN §3.4). Mutable only
+                  while the lease is Pending.
+                items:
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: set
+              client:
+                description: client is the facade client name (External leases).
+                maxLength: 253
+                type: string
+              deadline:
+                description: deadline fails the lease if it is not granted by then.
+                format: date-time
+                type: string
+              idempotencyKey:
+                description: idempotencyKey is the facade client's Idempotency-Key
+                  (External leases).
+                maxLength: 253
+                type: string
+              owner:
+                description: owner identifies the requester.
+                properties:
+                  kind:
+                    description: kind of the requester.
+                    enum:
+                    - Pod
+                    - External
+                    - Reconciler
+                    - Probe
+                    type: string
+                  name:
+                    description: name of the owner.
+                    maxLength: 253
+                    type: string
+                  namespace:
+                    description: namespace of the owner (Pod).
+                    maxLength: 63
+                    type: string
+                  uid:
+                    description: uid of the owner (Pod).
+                    type: string
+                required:
+                - kind
+                type: object
+              priorityClass:
+                default: 0
+                description: 'priorityClass orders the queue: higher first, then arrival.'
+                format: int32
+                type: integer
+              ttl:
+                description: ttl is the lifetime of an External lease after its last
+                  heartbeat.
+                type: string
+              vm:
+                description: |-
+                  vm is the Hyper-V name of the VM the memory is leased on. Required for
+                  every owner kind except Pod; pod leases get it once, at bind, from the
+                  chosen node.
+                maxLength: 253
+                minLength: 1
+                type: string
+            required:
+            - bytes
+            - owner
+            type: object
+            x-kubernetes-validations:
+            - message: vm can be set once and is immutable afterwards
+              rule: '!has(oldSelf.vm) || (has(self.vm) && self.vm == oldSelf.vm)'
+            - message: bytes, priorityClass, owner, client and idempotencyKey are
+                immutable
+              rule: quantity(string(self.bytes)).compareTo(quantity(string(oldSelf.bytes)))
+                == 0 && self.priorityClass == oldSelf.priorityClass && self.owner
+                == oldSelf.owner && has(self.client) == has(oldSelf.client) && (!has(self.client)
+                || self.client == oldSelf.client) && has(self.idempotencyKey) == has(oldSelf.idempotencyKey)
+                && (!has(self.idempotencyKey) || self.idempotencyKey == oldSelf.idempotencyKey)
+            - message: vm is required unless owner.kind is Pod
+              rule: has(self.vm) || self.owner.kind == 'Pod'
+            - message: ttl is only allowed for owner.kind External
+              rule: '!has(self.ttl) || self.owner.kind == ''External'''
+          status:
+            description: status is written by the coordinator.
+            properties:
+              assignedAfter:
+                anyOf:
+                - type: integer
+                - type: string
+                description: assignedAfter is the VM's assignment after the grant's
+                  resize.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              assignedBefore:
+                anyOf:
+                - type: integer
+                - type: string
+                description: assignedBefore is the VM's assignment before the grant's
+                  resize.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
+              enqueuedAt:
+                description: enqueuedAt is the lease's queue position (arrival time).
+                format: date-time
+                type: string
+              expiresAt:
+                description: expiresAt is when an External lease expires without a
+                  heartbeat.
+                format: date-time
+                type: string
+              grantedAt:
+                description: grantedAt is when the lease became Granted.
+                format: date-time
+                type: string
+              message:
+                description: message is a human-readable explanation of the current
+                  phase.
+                type: string
+              phase:
+                description: phase of the lease.
+                enum:
+                - Pending
+                - Reserved
+                - Resizing
+                - Granted
+                - Released
+                - Failed
+                type: string
+              reason:
+                description: reason is a CamelCase reason for the current phase, e.g.
+                  Timeout.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - fieldPath: .spec.candidateVMs
+          message: candidateVMs can only change while the lease is Pending
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.phase) || oldSelf.status.phase
+            == ''Pending'' || (has(self.spec.candidateVMs) == has(oldSelf.spec.candidateVMs)
+            && (!has(self.spec.candidateVMs) || self.spec.candidateVMs == oldSelf.spec.candidateVMs))'
+    served: true
+    storage: true
+    subresources:
+      status: {}

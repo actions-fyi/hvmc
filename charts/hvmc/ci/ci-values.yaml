@@ -1,0 +1,46 @@
+# Values for ct lint (and later ct install): a host with every kind of VM
+# from DESIGN §5, enrollment through an Ingress with TLS.
+hostConfig:
+  agents:
+    - name: host
+      dnsName: hyperv-01.example.com
+  vms:
+    - name: linux-node-1
+      node: linux-node-1
+      guestOS: linux
+      mode: fixed
+      base: 3Gi
+      margin: 2Gi
+    - name: windows-node-1
+      node: windows-node-1
+      guestOS: windows
+      mode: static
+      base: 4Gi
+      policy:
+        min: 6Gi
+        max: 24Gi
+    - name: docker-host-1
+      guestOS: windows
+      mode: static
+      base: 3Gi
+      guestAgent:
+        dnsName: docker-host-1.example.com
+        port: 9444
+    - name: probe-1
+      guestOS: windows
+      mode: static
+      base: 2Gi
+      probe: true
+      guestAgent:
+        dnsName: probe-1.example.com
+
+facade:
+  ingress:
+    host: hvmc.example.com
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: example-issuer
+    tls:
+      - secretName: hvmc-facade-tls
+        hosts:
+          - hvmc.example.com

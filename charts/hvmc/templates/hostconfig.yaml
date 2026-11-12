@@ -1,0 +1,29 @@
+{{- if not .Values.hostConfig.existing -}}
+{{- /*
+HostConfig "default" (DESIGN §5), rendered from values.hostConfig. Helm builds
+every object of a release before it creates any, so a HostConfig template
+would fail the first install ("ensure CRDs are installed first") because its
+CRD is a template of the same release (DESIGN §11). The chart therefore ships
+the object in this ConfigMap and the coordinator server-side applies it
+whenever the ConfigMap changes. HostConfig is not owned by the ConfigMap, so
+crds.keep also keeps it.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hvmc-hostconfig
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hvmc.coordinator.labels" . | nindent 4 }}
+data:
+  hostconfig.yaml: |
+    apiVersion: hvmc.fax.fyi/v1alpha1
+    kind: HostConfig
+    metadata:
+      name: default
+      labels:
+        app.kubernetes.io/name: hvmc
+        app.kubernetes.io/part-of: hvmc
+    spec:
+      {{- toYaml (omit .Values.hostConfig "existing") | nindent 6 }}
+{{- end }}

@@ -1,0 +1,139 @@
+# Values for the hvmc chart (DESIGN §11). One release per cluster: object
+# names are fixed (hvmc-*), the CRDs and HostConfig "default" are cluster-wide.
+# values.schema.json validates everything below.
+
+image:
+  # Coordinator image (built with ko: distroless, non-root).
+  repository: docker.io/matfax/hvmc
+  # Image tag; empty uses the chart's appVersion.
+  tag: ""
+  # Image digest (sha256:...); when set it pins the image instead of the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Secrets for pulling the image, e.g. [{name: regcred}].
+imagePullSecrets: []
+
+# Coordinator replicas. One leader holds the ledger and talks to agents; the
+# others are hot standbys (DESIGN §6).
+replicas: 2
+
+crds:
+  # Add helm.sh/resource-policy: keep to the CRDs, so helm uninstall leaves
+  # them (and every HostConfig and MemoryLease) in place.
+  keep: false
+
+# HostConfig "default" (DESIGN §5). The chart renders it into ConfigMap
+# hvmc-hostconfig and the coordinator applies it: Helm cannot create a custom
+# resource in the same release that creates its CRD.
+hostConfig:
+  # true: the chart renders no HostConfig; create and edit HostConfig
+  # "default" yourself (kubectl, GitOps).
+  existing: false
+  # Host memory the ledger may hand out; 0 reads it from the host agent.
+  capacity: 0
+  # Host memory that is never handed out.
+  reserve: 4Gi
+  # Free memory kept in every managed VM unless the VM sets its own margin.
+  defaultMargin: 2Gi
+  # Granularity all resize targets are rounded up to.
+  step: 256Mi
+  # What a managed Dynamic Memory VM counts as committed: maximum | assigned.
+  dmAccounting: maximum
+  # Age after which agent data is treated as missing.
+  staleAfter: 30s
+  # The host agent, e.g.
+  #   - name: host           # DNS-1123 label
+  #     dnsName: hyperv-01.example.com
+  #     port: 9443           # optional, default 9443
+  agents: []
+  # Every VM the ledger manages; each gets a guest agent. E.g.
+  #   - name: linux-node-1   # Hyper-V VM name, a DNS-1123 label
+  #     node: linux-node-1   # Kubernetes node name (enables the extender)
+  #     guestOS: linux       # linux | windows
+  #     mode: fixed          # fixed | static | dynamic; linux -> fixed
+  #     base: 3Gi
+  #   - name: docker-host-1  # no node: facade-only target
+  #     guestOS: windows
+  #     mode: static
+  #     base: 3Gi
+  #     guestAgent: {dnsName: docker-host-1.example.com}
+  vms: []
+
+pki:
+  # Secret (tls.crt, tls.key) holding a CA to use instead of the generated
+  # hvmc-ca. Empty: the coordinator creates hvmc-ca on first start.
+  existingCASecret: ""
+
+# Exposure of the coordinator's HTTP listener (:8080) to agents and clients
+# outside the cluster: agent enrollment (/v1/enroll) now, the lease API later.
+facade:
+  service:
+    # ClusterIP (exposed through the Ingress below) or LoadBalancer.
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+    # LoadBalancer only: client CIDRs allowed by the load balancer.
+    loadBalancerSourceRanges: []
+  ingress:
+    enabled: true
+    # IngressClass; empty uses the cluster's default class.
+    className: ""
+    # Host name agents use for enrollment, e.g. hvmc.example.com. Empty
+    # matches any host.
+    host: ""
+    # e.g. cert-manager.io/cluster-issuer: letsencrypt
+    annotations: {}
+    # e.g. [{secretName: hvmc-facade-tls, hosts: [hvmc.example.com]}]
+    tls: []
+
+networkPolicy:
+  enabled: true
+  # Namespaces of the ingress controller allowed to reach the facade port.
+  # {} allows every namespace. A LoadBalancer facade accepts any source.
+  ingressControllerNamespaceSelector: {}
+  # Namespaces allowed to scrape the coordinator's metrics port; {} = all.
+  metricsNamespaceSelector: {}
+  apiServer:
+    # Ports the API server endpoints listen on (after Service DNAT).
+    ports: [443, 6443]
+    # NetworkPolicyPeers of the API server, e.g. [{ipBlock: {cidr: 10.0.0.0/24}}];
+    # empty allows any destination on the ports above.
+    to: []
+  dns:
+    # NetworkPolicyPeers of the cluster DNS; empty allows any destination on
+    # port 53, which also covers node-local DNS caches.
+    to: []
+  # Agent gRPC ports besides 9443 and the ports declared in hostConfig; only
+  # needed with hostConfig.existing.
+  agentPorts: []
+
+metrics:
+  serviceMonitor:
+    # Render a prometheus-operator ServiceMonitor for every Service labelled
+    # hvmc.fax.fyi/metrics=true (the coordinator and the agents).
+    enabled: false
+    # Extra labels, e.g. to match the Prometheus serviceMonitorSelector.
+    labels: {}
+    # Scrape interval; empty uses Prometheus' default.
+    interval: ""
+
+# Coordinator container resources.
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+    ephemeral-storage: 64Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+    ephemeral-storage: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+# Empty: spread the replicas over nodes where possible (preferred
+# anti-affinity on kubernetes.io/hostname).
+affinity: {}
