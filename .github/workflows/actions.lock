@@ -12,6 +12,7 @@ workflows:
         - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/claude.yml': []
     '.github/workflows/codeql.yml': []
+    '.github/workflows/flowpact.yml': []
     '.github/workflows/label-sync.yml': []
     '.github/workflows/pr-metadata.yml': []
     '.github/workflows/renovate.yml': []
