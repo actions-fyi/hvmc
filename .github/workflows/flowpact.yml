@@ -1,0 +1,20 @@
+name: Check Workflow Data Flow
+# Checks pushes to main, where a failed check opens an issue. Pull requests and merge groups are
+# covered by the org ruleset workflow of the same name of actions-fyi/ruleset-workflows.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  flowpact:
+    name: flowpact
+    # The union of what the jobs of _flowpact.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Check out the repository and fetch the remote interfaces
+      security-events: write # Upload the SARIF report to code scanning
+      actions: read # Let upload-sarif read the workflow run
+      id-token: write # Declared by _flowpact.yml for pull requests, which this doesn't run on
+      issues: write # Report a failed check on main
+    uses: actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v0.18.1
