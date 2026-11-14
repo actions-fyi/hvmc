@@ -72,6 +72,21 @@ remotes:
       resolve-report:
         issues: write
         pull-requests: write
+  actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v0.18.1:
+    sha: 62f4556f15dbf623e76ceeacef49b957fbc76384
+    kind: workflow
+    jobPermissions:
+      check:
+        contents: read
+      sarif:
+        security-events: write
+        actions: read
+      update:
+        contents: read
+      commit:
+        id-token: write
+      issue:
+        issues: write
   actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v0.15.0:
     sha: 9f289b5f5fc2dd0520b5d058e5abb5b23b73dc25
     kind: workflow
