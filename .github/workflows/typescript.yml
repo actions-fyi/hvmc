@@ -1,0 +1,19 @@
+name: Check TypeScript
+# Checks pushes to main. Pull requests and merge groups are covered by the org ruleset workflow
+# Check TypeScript of actions-fyi/ruleset-workflows. On a push it gates nothing: it reports a
+# default branch that broke without a pull request, or through a dependency that changed since.
+# The check lives in _typescript.yml of actions-fyi/shared-workflows; see there. A repository
+# without a package.json at its root passes without checking anything.
+on:
+  push:
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  typescript:
+    name: TypeScript
+    # What the jobs of _typescript.yml declare; a called job can't get more.
+    permissions:
+      contents: read # Read package.json and the lockfile, and check the package out
+    uses: actions-fyi/shared-workflows/.github/workflows/_typescript.yml@v0.19.0

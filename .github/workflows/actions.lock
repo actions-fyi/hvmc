@@ -6,16 +6,17 @@ workflows:
     '.github/workflows/actions-lock-explain.yml': []
     '.github/workflows/actions-lock-push.yml': []
     '.github/workflows/auto-label.yml': []
-    '.github/workflows/ci.yaml':
-        - 'actions/checkout@v7.0.1'
-        - 'actions/setup-go@v7.0.0'
-        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/claude.yml': []
+    '.github/workflows/cloudflare.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/setup-node@v7.1.0'
+        - 'step-security/harden-runner@v2.22.4'
     '.github/workflows/codeql.yml': []
     '.github/workflows/flowpact.yml': []
     '.github/workflows/label-sync.yml': []
     '.github/workflows/pr-metadata.yml': []
     '.github/workflows/renovate.yml': []
+    '.github/workflows/typescript.yml': []
     '.github/workflows/zizmor.yml': []
 dependencies:
     'actions/checkout@v7.0.1':
@@ -23,11 +24,11 @@ dependencies:
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
         owner_id: 44036562
         repo_id: 197814629
-    'actions/setup-go@v7.0.0':
-        ref: 'v7.0.0'
-        commit: 'sha1-b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
+    'actions/setup-node@v7.1.0':
+        ref: 'v7.1.0'
+        commit: 'sha1-949feb2413d6458794dcd2491c4babbbce0c15c1'
         owner_id: 44036562
-        repo_id: 192624594
+        repo_id: 189476904
     'step-security/harden-runner@v2.22.4':
         ref: 'v2.22.4'
         commit: 'sha1-1d88384fd173af6ecb012dfd0264a306b711241a'

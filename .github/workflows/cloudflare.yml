@@ -1,0 +1,170 @@
+name: Check Cloudflare Worker
+# Checks that a repository's Cloudflare Worker has a valid configuration and bundles, without
+# deploying it and without Cloudflare credentials. It is self-contained, not a shared workflow, and
+# is meant to be copied to the repositories that host a Worker. In any other repository it passes
+# without checking anything, so it is harmless where it doesn't apply.
+#
+# The worker job decides whether there is a Worker to check: a wrangler.toml, wrangler.json or
+# wrangler.jsonc at the repository's root. If not, the check job is skipped, and the run still
+# succeeds, because the worker job does. There is no paths filter, because nearly any file can
+# break a bundle.
+#
+# The check job installs the repository's locked dependencies with npm ci and runs
+# wrangler deploy --dry-run. That runs the [build] command of the Wrangler config, bundles the
+# Worker, reads the assets directory, prints the bindings and the upload size, and exits without
+# contacting Cloudflare. So it fails on a config that doesn't parse, a missing entry point, and a
+# Worker that doesn't bundle. It doesn't check that the KV namespaces, queues or account IDs the
+# config names exist: that needs a Cloudflare token, which this workflow must never hold.
+#
+# Limits of this version:
+# - npm only. The root must hold a package.json and a package-lock.json; a repository that uses
+#   another package manager fails with an error that says so.
+# - Wrangler must be a locked dependency of the repository, in devDependencies. It is never
+#   installed ad hoc: an unpinned Wrangler would run with whatever the job holds, and its version
+#   would change between runs.
+# - Only the Wrangler config at the root is checked, with its default environment.
+#
+# The check job runs the repository's code: install scripts of its dependencies, and the build
+# command, all of which a pull request, a Renovate update among them, can change. So it holds a
+# read-only token and no secrets, checks out without persisting credentials, and restores and saves
+# no cache. Never pass it CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID.
+#
+# On pull requests and merge groups it is the gate; a merge queue waits for every required check,
+# so it also runs on merge_group, where it checks the merged result. On a push to main it gates
+# nothing: it reports a default branch that broke without a pull request.
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: ["main"]
+
+permissions: {}
+
+# github.ref is refs/pull/<number>/merge for a pull request, a unique
+# refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha> for each merge group entry, and the branch
+# for a push. So only a pull request's own earlier run is cancelled, and a push to main never
+# cancels a run that has started.
+concurrency:
+  group: cloudflare-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  worker:
+    name: Find Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # Read the Wrangler config, package.json and the lockfile
+    outputs:
+      check: ${{ steps.worker.outputs.check }}
+      node-version: ${{ steps.worker.outputs.node-version }}
+      node-version-file: ${{ steps.worker.outputs.node-version-file }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Only reads files; nothing from the repository runs here. The outputs are fixed words and
+      # file names, never text from the repository's files.
+      - name: Find Worker
+        id: worker
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          config=""
+          for file in wrangler.json wrangler.jsonc wrangler.toml; do
+            if [[ -f "$file" ]]; then
+              config="$file"
+              break
+            fi
+          done
+          if [[ -z "$config" ]]; then
+            echo "::notice::No wrangler.toml, wrangler.json or wrangler.jsonc in the repository's root. Nothing to check."
+            echo "check=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          [[ -f package.json ]] \
+            || fail "There's a $config in the repository's root, but no package.json next to it. Add one that lists wrangler in devDependencies, and commit its package-lock.json."
+          jq -e 'type == "object"' package.json > /dev/null \
+            || fail "package.json isn't a JSON object."
+          [[ -f package-lock.json ]] \
+            || fail "There's no package-lock.json in the repository's root. This check supports only npm, and installs only from its lockfile. Commit package-lock.json."
+          # packages is the lockfile format of npm 7 and later, dependencies the one before.
+          jq -e '(.packages["node_modules/wrangler"] // .dependencies.wrangler) | type == "object"' \
+            package-lock.json > /dev/null \
+            || fail "wrangler isn't a locked dependency of this repository. Add wrangler to devDependencies in package.json and commit the updated package-lock.json. This check doesn't install Wrangler on its own."
+
+          node_version=""
+          node_version_file=""
+          if [[ -f .nvmrc ]]; then
+            node_version_file=".nvmrc"
+          elif [[ -f .node-version ]]; then
+            node_version_file=".node-version"
+          elif jq -e '(.engines.node // .volta.node // "") | tostring | length > 0' package.json > /dev/null; then
+            node_version_file="package.json"
+          else
+            node_version="lts/*"
+          fi
+
+          {
+            echo "check=true"
+            echo "node-version=$node_version"
+            echo "node-version-file=$node_version_file"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Checking the Worker configured by $config."
+
+  check:
+    name: Cloudflare Worker
+    needs: worker
+    if: needs.worker.outputs.check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # Check the repository out
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@v2.22.4
+        with:
+          egress-policy: audit
+      - name: Checkout Repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # No cache; see the top. setup-node would otherwise cache npm's when packageManager names it.
+      - name: Set Up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ needs.worker.outputs.node-version }}
+          node-version-file: ${{ needs.worker.outputs.node-version-file }}
+          package-manager-cache: false
+      - name: Install Dependencies
+        run: npm ci
+      # --no-install makes npx run only the Wrangler that npm ci installed from the lockfile, and
+      # fail when there is none. No Cloudflare credentials are set, and none are needed: a dry run
+      # doesn't contact Cloudflare. The bundle is written outside the checkout and thrown away.
+      - name: Dry-Run the Deployment
+        env:
+          WRANGLER_SEND_METRICS: "false" # No usage metrics to Cloudflare
+          FORCE_COLOR: "0" # Plain output, so the upload size can be read from it
+        run: |
+          log="$RUNNER_TEMP/wrangler-dry-run.log"
+          npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run" 2>&1 \
+            | tee "$log"
+          # Only a line of this exact shape reaches the summary, never other output of the build.
+          size="$(grep -m 1 -oE 'Total Upload: [0-9.]+ [A-Za-z]+ / gzip: [0-9.]+ [A-Za-z]+' "$log" || true)"
+          {
+            echo "### Cloudflare Worker"
+            echo
+            echo "The dry run bundled the Worker. Nothing was deployed.${size:+ $size.}"
+          } >> "$GITHUB_STEP_SUMMARY"
