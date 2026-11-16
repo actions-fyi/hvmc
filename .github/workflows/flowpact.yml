@@ -17,4 +17,4 @@ jobs:
       actions: read # Let upload-sarif read the workflow run
       id-token: write # Declared by _flowpact.yml for pull requests, which this doesn't run on
       issues: write # Report a failed check on main
-    uses: actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v0.18.1
+    uses: actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v0.19.0
