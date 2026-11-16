@@ -164,6 +164,21 @@ remotes:
         issues: read
       apply:
         issues: write
+  actions-fyi/shared-workflows/.github/workflows/_typescript.yml@v0.19.0:
+    sha: bea33ec2671731b7e4d833f03020e3b39e5340b2
+    kind: workflow
+    inputs:
+      scripts:
+        type: string
+        default: typecheck lint format:check build test
+      working-directory:
+        type: string
+        default: .
+    jobPermissions:
+      project:
+        contents: read
+      check:
+        contents: read
   actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v0.18.1:
     sha: 62f4556f15dbf623e76ceeacef49b957fbc76384
     kind: workflow
@@ -238,6 +253,31 @@ remotes:
     outputs:
       - go-version
       - cache-hit
+  actions/setup-node@v7.1.0:
+    sha: 949feb2413d6458794dcd2491c4babbbce0c15c1
+    kind: action
+    using: node24
+    inputs:
+      node-version: {}
+      node-version-file: {}
+      architecture: {}
+      check-latest:
+        default: false
+      registry-url: {}
+      scope: {}
+      token:
+        default: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+      cache: {}
+      package-manager-cache:
+        default: true
+      cache-dependency-path: {}
+      mirror: {}
+      mirror-token: {}
+    outputs:
+      - cache-hit
+      - cache-primary-key
+      - cache-matched-key
+      - node-version
   step-security/harden-runner@v2.22.4:
     sha: 1d88384fd173af6ecb012dfd0264a306b711241a
     kind: action
