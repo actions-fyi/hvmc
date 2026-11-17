@@ -219,8 +219,8 @@ remotes:
     outputs:
       - ref
       - commit
-  actions/setup-go@v7.0.0:
-    sha: b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+  actions/setup-go@v7.1.0:
+    sha: d8cbb8045d7f43706b9177cceb36c1f91a6644d5
     kind: action
     using: node24
     inputs:
@@ -238,6 +238,15 @@ remotes:
     outputs:
       - go-version
       - cache-hit
+      - GOPATH
+      - GOBIN
+      - go-bin-path
+      - GOROOT
+      - GOCACHE
+      - GOMODCACHE
+      - GOOS
+      - GOARCH
+      - GOTOOLDIR
   step-security/harden-runner@v2.22.4:
     sha: 1d88384fd173af6ecb012dfd0264a306b711241a
     kind: action
