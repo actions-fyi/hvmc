@@ -1,0 +1,7 @@
+# Read by the org's actionlint ruleset workflow, which lints this repository's pull requests.
+#
+# ubuntu-24.04-firewall is GitHub's egress firewall runner (technical preview): a GitHub-hosted
+# label that actionlint doesn't know yet, so it's declared here as if it were self-hosted.
+self-hosted-runner:
+  labels:
+    - ubuntu-24.04-firewall
