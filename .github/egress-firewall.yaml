@@ -20,6 +20,8 @@ allow:
   - api.github.com                       # REST and GraphQL API: gh, github-script, the actions
   - uploads.github.com                   # CodeQL's SARIF upload
   - release-assets.githubusercontent.com # release downloads: bun, node, gh extensions, re2
+  - ghcr.io                              # actionlint's container image
+  - pkg-containers.githubusercontent.com # ghcr.io's blobs
   # Package registries
   - registry.npmjs.org     # renovate-config-validator, Wrangler, and Claude Code through bun
   - pypi.org               # zizmor's install
