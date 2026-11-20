@@ -9,7 +9,6 @@ workflows:
     '.github/workflows/ci.yaml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@v7.1.0'
-        - 'step-security/harden-runner@v2.23.0'
     '.github/workflows/claude.yml': []
     '.github/workflows/codeql.yml': []
     '.github/workflows/flowpact.yml': []
@@ -28,8 +27,3 @@ dependencies:
         commit: 'sha1-d8cbb8045d7f43706b9177cceb36c1f91a6644d5'
         owner_id: 44036562
         repo_id: 192624594
-    'step-security/harden-runner@v2.23.0':
-        ref: 'v2.23.0'
-        commit: 'sha1-aebdcf6156ab6691adf63218240e476564a1ed4c'
-        owner_id: 88700172
-        repo_id: 422287306
