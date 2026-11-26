@@ -1,7 +1,11 @@
 package agentclient_test
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -345,5 +349,59 @@ func TestPoolWithoutTLSFailsClosed(t *testing.T) {
 	t.Cleanup(insecure.Close)
 	if err := insecure.Sync(ctx, eps); err != nil {
 		t.Errorf("Sync() with Insecure = %v", err)
+	}
+}
+
+// When an agent's expected name changes while its address does not
+// resolve, the pool must verify the new name on the last good address, not
+// keep the connection that verifies the old one, during the outage or after
+// the address resolves again.
+func TestSyncVerifiesRenamedAgentDuringResolveFailure(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	resolveFails := false
+	setResolveFails := func(v bool) { mu.Lock(); resolveFails = v; mu.Unlock() }
+	resolve := agentclient.DefaultResolver(e.reader)
+	p := agentclient.NewPool(agentclient.PoolOptions{
+		TLS: e.client.ClientTLSConfig(e.ca.Pool()), Clock: testClock{e.clk},
+		Resolver: func(ctx context.Context, ep agentclient.Endpoint) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if resolveFails {
+				return "", errors.New("lookup failed")
+			}
+			return resolve(ctx, ep)
+		},
+	})
+	t.Cleanup(p.Close)
+	getHost := func() error {
+		h, err := p.Host("host")
+		must(t, err)
+		_, err = h.GetHost(e.ctx)
+		return err
+	}
+
+	eps := agentclient.Endpoints(e.hc)
+	must(t, p.Sync(e.ctx, eps))
+	if err := getHost(); err != nil {
+		t.Fatalf("GetHost() = %v", err)
+	}
+	renamed := slices.Clone(eps)
+	for i := range renamed {
+		if renamed[i].Name == "host" {
+			renamed[i].ServerName = "other.example.com"
+		}
+	}
+	setResolveFails(true)
+	if err := p.Sync(e.ctx, renamed); err == nil {
+		t.Error("Sync() with a failing lookup = nil")
+	}
+	if err := getHost(); err == nil {
+		t.Error("GetHost() accepted the old name while the address did not resolve")
+	}
+	setResolveFails(false)
+	must(t, p.Sync(e.ctx, renamed))
+	if err := getHost(); err == nil {
+		t.Error("GetHost() accepted the old name after the address resolved again")
 	}
 }
