@@ -294,6 +294,7 @@ Common to both platforms:
 
 Windows (the Hyper-V host and Windows guests):
 - Binary `C:\Program Files\hvmc\hvmc.exe`, config and keys in `C:\ProgramData\hvmc\`, which enrollment gives a protected ACL (inherited from `C:\ProgramData` would let every local user read the key): SYSTEM and Administrators full control, the service account modify, inherited by keys, pending policy, audit log and logs; `agent.yaml` has its own ACL with the service account read-only, set on every write by `enroll` and `policy sync` (`internal/fileacl`).
+- Host role prerequisite: PowerShell 7 (`pwsh`). The host agent does not fall back to Windows PowerShell 5.1; without `pwsh` the `worker` readiness check fails and names PowerShell 7 and where it was looked for, and `hvmc agent install --role host` checks for it and refuses with a clear message if it is missing.
 - Service `hvmc-agent` (display name *Hyper-V Memory Coordinator Agent*), *Automatic (Delayed Start)*, account `NT SERVICE\hvmc-agent`; host role adds a dependency on `vmms` and adds the virtual account to *Hyper-V Administrators*.
 - Recovery actions: restart after 5 s, 30 s, 60 s; reset after 1 day; actions also for stops with errors.
 - Windows Event Log source `hvmc-agent`; Windows Firewall rules for the `listen` and `health` ports.
