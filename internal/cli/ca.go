@@ -4,10 +4,13 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/matfax/hvmc/api/v1alpha1"
 	"github.com/matfax/hvmc/internal/pki"
 )
 
@@ -50,6 +53,12 @@ func newCAExportCommand(newReader readerFactory) *cobra.Command {
 }
 
 func kubeReader(kubeconfig, namespace string) (client.Reader, string, error) {
+	return kubeClient(kubeconfig, namespace)
+}
+
+// kubeClient connects through the caller's kubeconfig with a scheme that
+// includes the Kubernetes API types and HostConfig.
+func kubeClient(kubeconfig, namespace string) (client.Client, string, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	rules.ExplicitPath = kubeconfig
 	overrides := &clientcmd.ConfigOverrides{Context: clientcmdapi.Context{Namespace: namespace}}
@@ -62,7 +71,14 @@ func kubeReader(kubeconfig, namespace string) (client.Reader, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve namespace: %w", err)
 	}
-	c, err := client.New(cfg, client.Options{})
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, "", err
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		return nil, "", err
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, "", fmt.Errorf("create client: %w", err)
 	}
