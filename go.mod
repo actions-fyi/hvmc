@@ -12,8 +12,8 @@ require (
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
-	k8s.io/api v0.37.2
-	k8s.io/apimachinery v0.37.2
+	k8s.io/api v0.37.3
+	k8s.io/apimachinery v0.37.3
 	k8s.io/client-go v0.37.2
 	pgregory.net/rapid v1.3.0
 	sigs.k8s.io/controller-runtime v0.25.3
