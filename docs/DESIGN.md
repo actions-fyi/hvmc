@@ -50,6 +50,7 @@ internal/agentapi/        generated gRPC code
 internal/agent/host/      host agent: pwsh worker, local policy, Hyper-V ops
 internal/agent/guest/     guest agent: Linux /proc/meminfo, Windows counters
 internal/agent/svc/       service integration: Windows SCM + Event Log + firewall; systemd unit + sd_notify/watchdog
+internal/fileacl/          Windows ACLs for agent state and config (protected DACLs; no-op elsewhere)
 internal/agentclient/     coordinator-side clients, health tracker, EndpointSlice writer
 internal/pki/             internal CA, enrollment, rotation
 internal/extender/        HTTP handlers for filter / prioritize / bind
