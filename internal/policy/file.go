@@ -187,6 +187,13 @@ func Load(path string) (Policy, error) {
 // canonical form only. The permission bits of an existing file are kept, a
 // new file gets 0600; Windows ACLs are inherited from the directory.
 func Save(path string, p Policy) error {
+	return SaveSecured(path, p, nil)
+}
+
+// SaveSecured is [Save] that, when secure is set, also applies secure to
+// the temporary file before it replaces path (on Windows, an ACL that the
+// directory's inherited one must not override).
+func SaveSecured(path string, p Policy, secure func(string) error) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -204,7 +211,7 @@ func Save(path string, p Policy) error {
 	case !errors.Is(err, fs.ErrNotExist):
 		return err
 	}
-	return writeAtomic(path, out, perm)
+	return writeAtomic(path, out, perm, secure)
 }
 
 // replaceVMs returns the YAML document doc with its `vms` key set to p.
@@ -220,7 +227,7 @@ func replaceVMs(doc []byte, p Policy) ([]byte, error) {
 	return yaml.Marshal(top)
 }
 
-func writeAtomic(path string, data []byte, perm fs.FileMode) (err error) {
+func writeAtomic(path string, data []byte, perm fs.FileMode, secure func(string) error) (err error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -242,6 +249,11 @@ func writeAtomic(path string, data []byte, perm fs.FileMode) (err error) {
 	}
 	if err = os.Chmod(tmp, perm); err != nil {
 		return err
+	}
+	if secure != nil {
+		if err = secure(tmp); err != nil {
+			return err
+		}
 	}
 	return os.Rename(tmp, path)
 }
