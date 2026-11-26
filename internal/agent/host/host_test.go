@@ -293,6 +293,7 @@ func TestReadinessChecks(t *testing.T) {
 	// stale after 2× the poll interval.
 	h.set(func(f *fixture) { f.VMMS = "Stopped" })
 	_, ch, _ := poll.current()
+	clk.waitTimer(t) // the poll timer
 	clk.Advance(PollInterval)
 	<-ch
 	if err := poll.checkVMMS(context.Background()); err == nil {
