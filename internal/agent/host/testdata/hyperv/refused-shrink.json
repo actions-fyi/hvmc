@@ -1,0 +1,70 @@
+{
+  "computerName": "hyperv-1",
+  "totalBytes": 68719476736,
+  "overheadBytes": 4294967296,
+  "vmms": "Running",
+  "hang": [],
+  "vms": [
+    {
+      "name": "windows-node-1",
+      "id": "00000001-0000-4000-8000-000000000001",
+      "state": "Running",
+      "assignedBytes": 8589934592,
+      "startupBytes": 8589934592,
+      "dynamicMemoryEnabled": false,
+      "minimumBytes": 536870912,
+      "maximumBytes": 1099511627776,
+      "buffer": 20,
+      "priority": 50,
+      "shrinkFloorBytes": 8589934592
+    },
+    {
+      "name": "windows-dm-1",
+      "id": "00000002-0000-4000-8000-000000000002",
+      "state": "Running",
+      "assignedBytes": 4294967296,
+      "startupBytes": 2147483648,
+      "dynamicMemoryEnabled": true,
+      "minimumBytes": 2147483648,
+      "maximumBytes": 8589934592,
+      "buffer": 20,
+      "priority": 50
+    },
+    {
+      "name": "linux-node-1",
+      "id": "00000003-0000-4000-8000-000000000003",
+      "state": "Running",
+      "assignedBytes": 8589934592,
+      "startupBytes": 8589934592,
+      "dynamicMemoryEnabled": false,
+      "minimumBytes": 536870912,
+      "maximumBytes": 1099511627776,
+      "buffer": 20,
+      "priority": 50
+    },
+    {
+      "name": "windows-off-1",
+      "id": "00000004-0000-4000-8000-000000000004",
+      "state": "Off",
+      "assignedBytes": 0,
+      "startupBytes": 4294967296,
+      "dynamicMemoryEnabled": false,
+      "minimumBytes": 536870912,
+      "maximumBytes": 1099511627776,
+      "buffer": 20,
+      "priority": 50
+    },
+    {
+      "name": "windows-saved-1",
+      "id": "00000005-0000-4000-8000-000000000005",
+      "state": "Saved",
+      "assignedBytes": 0,
+      "startupBytes": 4294967296,
+      "dynamicMemoryEnabled": false,
+      "minimumBytes": 536870912,
+      "maximumBytes": 1099511627776,
+      "buffer": 20,
+      "priority": 50
+    }
+  ]
+}

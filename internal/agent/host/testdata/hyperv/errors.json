@@ -1,0 +1,26 @@
+{
+  "vmmsDown": {
+    "message": "Hyper-V encountered an error trying to access an object on computer 'localhost' because the object was not found. The object might have been deleted, or you might not have permission to perform the task. Verify that the Virtual Machine Management service on the computer is running. If the service is running, try to perform the task again by using Run as Administrator.",
+    "category": "ObjectNotFound",
+    "errorId": "ObjectNotFound",
+    "hresult": -2146233088
+  },
+  "vmNotFound": {
+    "message": "Hyper-V was unable to find a virtual machine with the given ID.",
+    "category": "InvalidArgument",
+    "errorId": "InvalidParameter",
+    "hresult": -2146233088
+  },
+  "shrinkRefused": {
+    "message": "Failed to modify device 'Memory'. The guest operating system did not release enough memory; only part of the requested memory was removed.",
+    "category": "InvalidOperation",
+    "errorId": "OperationFailed",
+    "hresult": -2147467259
+  },
+  "outOfMemory": {
+    "message": "Failed to modify device 'Memory'. Not enough memory in the system to add memory to the virtual machine. (0x8007000E)",
+    "category": "ResourceUnavailable",
+    "errorId": "OutOfMemory",
+    "hresult": -2147024882
+  }
+}
