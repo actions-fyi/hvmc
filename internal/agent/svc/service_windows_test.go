@@ -173,6 +173,10 @@ func stageMock(t *testing.T) {
 		}
 	}
 	setDACL(t, dir, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;"+fileacl.ServiceSID(ServiceName)+")")
+	// SCM keeps a service's environment in the REG_MULTI_SZ value
+	// Environment of its registry key and applies it at the next start;
+	// neither the Win32 service API nor x/sys/windows/svc/mgr has a setter
+	// for it, so the test writes the value directly. Only this test does.
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Services\`+ServiceName, registry.SET_VALUE)
 	if err != nil {
 		t.Fatal(err)
