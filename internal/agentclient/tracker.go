@@ -269,7 +269,7 @@ type Tracker struct {
 	offsets    map[string]int64
 	vms        map[string]VMInfo
 	vmStamps   map[string]receiveStamp // per VM in the latest VM list
-	runCtx     context.Context //nolint:containedctx // lifetime of Start, for the per-agent workers
+	runCtx     context.Context         //nolint:containedctx // lifetime of Start, for the per-agent workers
 	subs       map[uint64]chan struct{}
 	subSeq     uint64
 }
