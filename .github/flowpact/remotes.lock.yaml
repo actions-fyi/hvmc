@@ -2,8 +2,8 @@
 # The interfaces of the remote reusable workflows and actions this repository uses, at the commit each resolved to.
 version: 1
 remotes:
-  actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_actions-lock.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     jobPermissions:
       changes:
@@ -15,8 +15,8 @@ remotes:
       commit:
         contents: read
         id-token: write
-  actions-fyi/shared-workflows/.github/workflows/_claude.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_claude.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -39,8 +39,8 @@ remotes:
         issues: write
         id-token: write
         actions: read
-  actions-fyi/shared-workflows/.github/workflows/_codeql.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_codeql.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     inputs:
       languages:
@@ -51,6 +51,7 @@ remotes:
         contents: read
       analyze:
         contents: read
+        security-events: read
       upload:
         contents: read
         security-events: write
@@ -58,8 +59,8 @@ remotes:
       results:
         contents: read
         id-token: write
-  actions-fyi/shared-workflows/.github/workflows/_coverage.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_coverage.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     jobPermissions:
       find:
@@ -74,8 +75,8 @@ remotes:
         contents: read
         actions: read
         id-token: write
-  actions-fyi/shared-workflows/.github/workflows/_explain.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_explain.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -100,8 +101,8 @@ remotes:
         contents: read
         issues: write
         pull-requests: write
-  actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_flowpact.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     jobPermissions:
       check:
@@ -118,15 +119,15 @@ remotes:
       issue:
         contents: read
         issues: write
-  actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     jobPermissions:
       labels:
         contents: read
         issues: write
-  actions-fyi/shared-workflows/.github/workflows/_pr-metadata.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_pr-metadata.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -172,8 +173,8 @@ remotes:
       post-description:
         contents: read
         pull-requests: write
-  actions-fyi/shared-workflows/.github/workflows/_renovate.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_renovate.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     jobPermissions:
       renovate:
@@ -183,8 +184,8 @@ remotes:
       fix:
         contents: read
         id-token: write
-  actions-fyi/shared-workflows/.github/workflows/_triage.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_triage.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -203,8 +204,8 @@ remotes:
       apply:
         contents: read
         issues: write
-  actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v4.3.0:
-    sha: 2fd645600c3a9c850dadc5298a1844be2820318c
+  actions-fyi/shared-workflows/.github/workflows/_zizmor.yml@v4.4.0:
+    sha: 4223dbd6c8d9b4f7d899e5ab12f6ac2f742804d5
     kind: workflow
     inputs:
       zizmor-version:
