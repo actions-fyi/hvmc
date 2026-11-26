@@ -466,6 +466,13 @@ func (s *Supervisor) current() (*worker, error) {
 	}
 }
 
+// worker returns the running worker, nil while none runs.
+func (s *Supervisor) worker() *worker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur
+}
+
 // Check is the readiness check "worker" (pwsh worker alive).
 func (s *Supervisor) Check(context.Context) error {
 	s.mu.Lock()

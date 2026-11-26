@@ -233,11 +233,7 @@ func (e *supEnv) exitCount() int {
 func slogTo(w io.Writer) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
 
 // worker returns the current worker, nil while none runs.
-func (e *supEnv) worker() *worker {
-	e.sup.mu.Lock()
-	defer e.sup.mu.Unlock()
-	return e.sup.cur
-}
+func (e *supEnv) worker() *worker { return e.sup.worker() }
 
 // waitNew waits until a worker other than old runs.
 func (e *supEnv) waitNew(old *worker) {
