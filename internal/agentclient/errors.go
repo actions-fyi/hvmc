@@ -59,6 +59,10 @@ var (
 	// ErrInternal (INTERNAL and any other code): an unexpected agent-side
 	// failure. Retryable with backoff.
 	ErrInternal = errors.New("agentclient: agent internal error")
+
+	// ErrSeveralHostAgents is returned by Tracker.Configure for a HostConfig
+	// with more than one host agent: the ledger covers one Hyper-V host.
+	ErrSeveralHostAgents = errors.New("agentclient: HostConfig declares more than one host agent")
 )
 
 // RPCError is an agent call that failed.

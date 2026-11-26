@@ -268,6 +268,7 @@ type Tracker struct {
 	agents     map[string]*tracked
 	offsets    map[string]int64
 	vms        map[string]VMInfo
+	prevVMs    map[string]VMInfo       // the VM list before vms
 	vmStamps   map[string]receiveStamp // per VM in the latest VM list
 	runCtx     context.Context         //nolint:containedctx // lifetime of Start, for the per-agent workers
 	subs       map[uint64]chan struct{}
@@ -336,9 +337,20 @@ func NewTracker(opts TrackerOptions) *Tracker {
 // Configure applies a HostConfig: the pool connects to its agents, new
 // agents start in Unknown, agents no longer declared are dropped (their
 // ledger state becomes Unknown). Errors resolving an agent's address are
-// returned; that agent stays tracked and turns Unreachable.
+// returned; that agent stays tracked and turns Unreachable. A HostConfig
+// with more than one host agent is refused with ErrSeveralHostAgents and
+// changes nothing: the ledger, and the tracker's VM list, cover one host.
 func (t *Tracker) Configure(ctx context.Context, hc *v1alpha1.HostConfig) error {
 	eps := Endpoints(hc)
+	var hosts []string
+	for _, ep := range eps {
+		if ep.Role == RoleHost {
+			hosts = append(hosts, ep.Name)
+		}
+	}
+	if len(hosts) > 1 {
+		return fmt.Errorf("%w: %s", ErrSeveralHostAgents, strings.Join(hosts, ", "))
+	}
 	err := t.opts.Pool.Sync(ctx, eps)
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -689,6 +701,7 @@ func (t *Tracker) observeVMs(a *tracked, vms []VMInfo) {
 	}
 	t.vmStamps = stamps
 	t.observeLocked(vmsObservation(vms))
+	t.prevVMs = t.vms
 	t.vms = make(map[string]VMInfo, len(vms))
 	for _, v := range vms {
 		t.vms[v.Name] = v
@@ -732,7 +745,9 @@ func later(a, b time.Time) time.Time {
 }
 
 // tryOffsetLocked records offset(vm) = assigned − guest total once, from a
-// running VM's host data and a guest reading that are both fresh.
+// fresh guest reading taken between two fresh host readings of the running
+// VM that report the same assigned memory. Readings that are merely fresh
+// could straddle a resize and bake a whole step into the offset.
 func (t *Tracker) tryOffsetLocked(name string) {
 	a, ok := t.agents[name]
 	if !ok || a.ep.Role != RoleGuest {
@@ -742,8 +757,11 @@ func (t *Tracker) tryOffsetLocked(name string) {
 		return
 	}
 	v, ok := t.vms[a.ep.VM]
+	prev, hadPrev := t.prevVMs[a.ep.VM]
 	now := t.opts.Clock.Now()
-	if !ok || v.State != VMStateRunning || v.Assigned <= 0 || !t.freshLocked(now, v.ObservedAt) || !t.freshLocked(now, a.guestAt) {
+	if !ok || !hadPrev || v.State != VMStateRunning || v.Assigned <= 0 || prev.Assigned != v.Assigned ||
+		a.guestAt.Before(prev.ObservedAt) || a.guestAt.After(v.ObservedAt) ||
+		!t.freshLocked(now, prev.ObservedAt) || !t.freshLocked(now, a.guestAt) {
 		return
 	}
 	t.offsets[name] = Offset(v.Assigned, a.guestTotal)
@@ -931,14 +949,36 @@ func (t *Tracker) maybeRotate(ctx context.Context, a *tracked, ep Endpoint) {
 	ctx, cancel := context.WithTimeout(ctx, t.opts.CallTimeout)
 	defer cancel()
 	cert, err := t.opts.Rotator.Rotate(ctx, hc, ep.Name, certs)
+	// Confirm the install on a fresh handshake (DESIGN §4.6): the agent may
+	// have rolled back to its previous pair. Only a handshake that presents
+	// the new certificate makes it the known one.
+	var presented *x509.Certificate
+	var probeErr error
+	if err == nil {
+		presented, probeErr = t.opts.Pool.Probe(ctx, ep.Name)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now = t.opts.Clock.Now()
 	if err != nil {
-		a.nextRotate = t.opts.Clock.Now().Add(t.opts.RotationRetry)
+		a.nextRotate = now.Add(t.opts.RotationRetry)
 		return
 	}
-	a.installed = cert
-	t.certLocked(a, t.opts.Clock.Now())
+	if probeErr != nil || presented == nil || !presented.Equal(cert) {
+		a.nextRotate = now.Add(t.opts.RotationRetry)
+		if presented != nil {
+			a.peer = presented
+		}
+		msg := "the agent still presents its previous certificate after InstallCertificate"
+		if probeErr != nil {
+			msg = "confirming the installed certificate failed: " + probeErr.Error()
+		}
+		t.emitLocked(a, corev1.EventTypeWarning, ReasonCertificateRotationFailed, "InstallCertificate", msg)
+		t.certLocked(a, now)
+		return
+	}
+	a.installed, a.peer = cert, presented
+	t.certLocked(a, now)
 }
 
 func (t *Tracker) emitLocked(a *tracked, typ, reason, action, msg string) {

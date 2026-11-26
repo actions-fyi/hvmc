@@ -126,6 +126,8 @@ func TestEnvtestAgents(t *testing.T) {
 	tr.Poll(ctx)
 	e.wantState(tr, "host", ledger.AgentReady)
 	e.wantState(tr, "vm-a", ledger.AgentReady) // dialled at the Node's InternalIP, verified as node-1
+	// The offset needs a host reading on either side of the guest reading.
+	tr.Poll(ctx)
 	if off, ok := tr.Offset("vm-a"); !ok || off != 256*mib {
 		t.Errorf("offset(vm-a) = %d, %v", off, ok)
 	}

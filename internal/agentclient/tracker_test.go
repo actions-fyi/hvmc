@@ -34,6 +34,20 @@ func (e *env) wantGranted() {
 	}
 }
 
+// wantOffsetFromSecondRound fails unless offset(vm-a) is missing after one
+// round and 256Mi after the next: it needs a host reading on either side of
+// the guest reading.
+func (e *env) wantOffsetFromSecondRound(tr *agentclient.Tracker) {
+	e.t.Helper()
+	if _, ok := tr.Offset("vm-a"); ok {
+		e.t.Error("offset(vm-a) recorded from a single host reading")
+	}
+	tr.Poll(e.ctx)
+	if off, ok := tr.Offset("vm-a"); !ok || off != 256*mib {
+		e.t.Errorf("offset(vm-a) = %d, %v; want 256Mi", off, ok)
+	}
+}
+
 func TestTrackerFeedsLedger(t *testing.T) {
 	e := newEnv(t)
 	tr := e.tracker()
@@ -53,9 +67,7 @@ func TestTrackerFeedsLedger(t *testing.T) {
 	if vm.State != ledger.VMReady || vm.Assigned != 8*gib || !vm.UsedKnown || vm.Used != 3*gib {
 		t.Errorf("vm-a = %+v", vm)
 	}
-	if off, ok := tr.Offset("vm-a"); !ok || off != 256*mib {
-		t.Errorf("offset(vm-a) = %d, %v; want 256Mi", off, ok)
-	}
+	e.wantOffsetFromSecondRound(tr)
 
 	st, _ := tr.Status("host")
 	if st.Version != fake.DefaultAgentVersion || !st.LastSeen.Equal(t0) || st.Reason != agentclient.StateReasonServing ||
@@ -370,6 +382,57 @@ func TestRepeatedFutureReadingKeepsFirstReceiveTime(t *testing.T) {
 	agentclient.RecordCheckForTest(tr, guest, nil)
 	if st, _ := tr.Status("vm-a"); st.State != ledger.AgentDegraded || st.Reason != agentclient.StateReasonDataStale {
 		t.Errorf("vm-a = %s/%s with a frozen future-dated reading, want Degraded/%s", st.State, st.Reason, agentclient.StateReasonDataStale)
+	}
+}
+
+// The ledger covers one Hyper-V host, so a HostConfig with a second host
+// agent is refused and the tracker keeps its previous configuration.
+func TestConfigureRefusesSecondHostAgent(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	tr.Poll(e.ctx)
+	two := e.hc.DeepCopy()
+	two.Spec.Agents = append(two.Spec.Agents, v1alpha1.AgentSpec{Name: "host-2", DNSName: "host-2.example.com"})
+	if err := tr.Configure(e.ctx, two); !errors.Is(err, agentclient.ErrSeveralHostAgents) {
+		t.Fatalf("Configure(two host agents) = %v, want ErrSeveralHostAgents", err)
+	}
+	if _, ok := tr.Status("host-2"); ok {
+		t.Error("the second host agent is tracked")
+	}
+	e.wantState(tr, "host", ledger.AgentReady)
+}
+
+// offset(vm) is recorded only from a guest reading taken between two host
+// readings that report the same assigned memory, so a resize between the
+// host and the guest reading cannot bake a wrong offset in.
+func TestOffsetNotTakenAcrossResize(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	host := agentclient.TrackedForTest(tr, "host")
+	guest := agentclient.TrackedForTest(tr, "vm-a")
+	hostAt := func(assigned int64) {
+		agentclient.ObserveHostForTest(tr, host, agentclient.HostInfo{Name: "host", Total: 64 * gib, Free: 40 * gib, ObservedAt: e.clk.Now()},
+			[]agentclient.VMInfo{{Name: "vm-a", State: agentclient.VMStateRunning, Assigned: assigned, Startup: assigned, ObservedAt: e.clk.Now()}})
+		e.clk.Advance(time.Second)
+	}
+	guestAt := func(total int64) {
+		agentclient.ObserveGuestForTest(tr, guest, agentclient.GuestMemory{Total: total, Available: gib, ObservedAt: e.clk.Now()})
+		e.clk.Advance(time.Second)
+	}
+	hostAt(8 * gib)
+	guestAt(10*gib - 256*mib) // the VM was grown to 10Gi in between
+	hostAt(10 * gib)
+	if off, ok := tr.Offset("vm-a"); ok {
+		t.Fatalf("offset(vm-a) = %d recorded across a resize", off)
+	}
+	hostAt(10 * gib)
+	guestAt(10*gib - 256*mib)
+	if _, ok := tr.Offset("vm-a"); ok {
+		t.Fatal("offset(vm-a) recorded before a host reading followed the guest reading")
+	}
+	hostAt(10 * gib)
+	if off, ok := tr.Offset("vm-a"); !ok || off != 256*mib {
+		t.Errorf("offset(vm-a) = %d, %v; want 256Mi", off, ok)
 	}
 }
 

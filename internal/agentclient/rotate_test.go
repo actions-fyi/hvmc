@@ -121,3 +121,35 @@ func TestTrackerRotatesWhenDue(t *testing.T) {
 		t.Error("RotationDue(nil) is true")
 	}
 }
+
+// An install the agent rolls back (a client refused the new certificate)
+// is not taken as done: the tracker keeps the certificate the agent
+// presents and rotates again after RotationRetry.
+func TestTrackerRetriesRolledBackRotation(t *testing.T) {
+	e := newEnv(t, withScenario(func(sc *fake.Scenario) {
+		sc.Host.Certificate = &fake.CertSpec{RollBack: 1}
+	}))
+	tr := e.tracker(func(o *agentclient.TrackerOptions) {
+		o.Rotator = &agentclient.Rotator{CA: e.ca, Events: e.events}
+	})
+	tr.Poll(e.ctx)
+	st, _ := tr.Status("host")
+	first := st.CertNotAfter
+
+	e.clk.Advance(pki.LeafValidity * 2 / 3)
+	tr.Poll(e.ctx) // rotates; the agent rolls the install back
+	if n := e.sim.CallCount("host", "InstallCertificate"); n != 1 {
+		t.Fatalf("InstallCertificate called %d times when due", n)
+	}
+	if st, _ := tr.Status("host"); !st.CertNotAfter.Equal(first) {
+		t.Errorf("certificate notAfter %v after a rolled-back install, want the served %v", st.CertNotAfter, first)
+	}
+	e.clk.Advance(agentclient.DefaultRotationRetry)
+	tr.Poll(e.ctx)
+	if n := e.sim.CallCount("host", "InstallCertificate"); n != 2 {
+		t.Fatalf("InstallCertificate called %d times after the retry delay, want a retry", n)
+	}
+	if st, _ := tr.Status("host"); !st.CertNotAfter.After(first) {
+		t.Errorf("certificate notAfter %v after the retried rotation, want later than %v", st.CertNotAfter, first)
+	}
+}

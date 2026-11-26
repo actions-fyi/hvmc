@@ -101,6 +101,11 @@ type CertSpec struct {
 	// fail with INTERNAL (storing the pair failed; the current pair and the
 	// pending key are kept). Counts down as calls fail.
 	FailInstall int `json:"failInstall,omitempty"`
+	// RollBack makes the next n successful InstallCertificate calls roll
+	// back: the call succeeds, but the agent keeps serving its previous
+	// pair, as when a client refuses the new certificate (DESIGN §4.6).
+	// Counts down as installs roll back.
+	RollBack int `json:"rollBack,omitempty"`
 }
 
 // HostSpec is the Hyper-V host and the host agent's behaviours.
@@ -461,7 +466,7 @@ func (a AgentBehaviour) validate(where string, methods []string) []error {
 		for _, ip := range c.IPAddresses {
 			p.check(net.ParseIP(ip) == nil, "%s: certificate: invalid IP address %q", where, ip)
 		}
-		p.check(c.FailRotate < 0 || c.FailInstall < 0, "%s: certificate: failure counts must not be negative", where)
+		p.check(c.FailRotate < 0 || c.FailInstall < 0 || c.RollBack < 0, "%s: certificate: failure counts must not be negative", where)
 	}
 	return p.errs
 }
