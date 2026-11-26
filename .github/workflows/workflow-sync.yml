@@ -1,0 +1,64 @@
+name: Sync
+# Keeps this repository's copies of the workflows and workflow templates of actions-fyi/.github
+# up to date: when a copy differs, it opens a pull request here, or updates the one that is open.
+# Like every workflow here, it is distributed to the org's repositories, and each of them has it.
+#
+# In every repository but the source, the workflows job syncs: daily, on demand, and on the
+# workflow-sync event. A push to main that changes a workflow starts a run too, in which both jobs
+# skip.
+#
+# In actions-fyi/.github, the source, the sync skips itself, and a push to main that changes a
+# workflow or a workflow template runs the dispatch job instead: it sends the workflow-sync event to
+# the org's repositories, so a change doesn't wait for their daily run.
+#
+# The dispatch is a job here rather than a workflow of its own because everything in this
+# directory is distributed: a dispatch workflow would be copied to every repository and fail there,
+# since its Octo STS trust policy only trusts the source's main branch.
+#
+# The jobs live in _workflow-sync.yml and _workflow-sync-dispatch.yml of
+# actions-fyi/sync-workflows; see there.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+      - workflow-templates/*.yml
+      - workflow-templates/*.yaml
+      - .github/egress-firewall.yaml
+  schedule:
+    - cron: "43 3 * * *"
+  repository_dispatch:
+    types: [workflow-sync]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report which copies differ without opening a pull request.
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  workflows:
+    name: Workflows
+    # A push only dispatches; _workflow-sync.yml skips itself in the source.
+    # Not in a fork: Octo STS grants the sync token only to the org's repositories.
+    if: github.repository_owner == 'actions-fyi' && github.event_name != 'push'
+    # What the workflows job of _workflow-sync.yml declares; a called job can't get more.
+    permissions:
+      contents: read # Declared by the workflows job
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync.yml@v0.8.0
+    with:
+      dry-run: ${{ inputs.dry-run || false }} # Empty on push, schedule and repository_dispatch
+
+  dispatch:
+    name: Dispatch
+    # Only the source dispatches; its Octo STS trust policy trusts nothing else.
+    if: github.event_name == 'push' && github.repository == 'actions-fyi/.github'
+    # What the dispatch job of _workflow-sync-dispatch.yml declares; a called job can't get more.
+    permissions:
+      contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
+      id-token: write # Exchange the job's OIDC token with Octo STS
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync-dispatch.yml@v0.8.0
