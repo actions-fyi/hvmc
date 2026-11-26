@@ -355,6 +355,24 @@ func TestHungAgentFailsWithinCheckTimeout(t *testing.T) {
 	e.wantState(tr, "host", ledger.AgentUnreachable)
 }
 
+// A frozen reading from an agent whose clock runs ahead keeps the time it
+// was first received: polling it again does not make it fresh again.
+func TestRepeatedFutureReadingKeepsFirstReceiveTime(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	tr.Poll(e.ctx)
+	guest := agentclient.TrackedForTest(tr, "vm-a")
+	frozen := agentclient.GuestMemory{Total: 8 * gib, Available: 5 * gib, ObservedAt: e.clk.Now().Add(time.Hour)}
+	agentclient.ObserveGuestForTest(tr, guest, frozen)
+	e.clk.Advance(ledger.DefaultStaleAfter / 2)
+	agentclient.ObserveGuestForTest(tr, guest, frozen) // the same reading again
+	e.clk.Advance(ledger.DefaultStaleAfter/2 + time.Second)
+	agentclient.RecordCheckForTest(tr, guest, nil)
+	if st, _ := tr.Status("vm-a"); st.State != ledger.AgentDegraded || st.Reason != agentclient.StateReasonDataStale {
+		t.Errorf("vm-a = %s/%s with a frozen future-dated reading, want Degraded/%s", st.State, st.Reason, agentclient.StateReasonDataStale)
+	}
+}
+
 // Acceptance: a policy mismatch sends the proposal exactly once per digest.
 func TestPolicyProposedOncePerDigest(t *testing.T) {
 	e := newEnv(t)

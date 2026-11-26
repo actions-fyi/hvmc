@@ -268,6 +268,7 @@ type Tracker struct {
 	agents     map[string]*tracked
 	offsets    map[string]int64
 	vms        map[string]VMInfo
+	vmStamps   map[string]receiveStamp // per VM in the latest VM list
 	runCtx     context.Context //nolint:containedctx // lifetime of Start, for the per-agent workers
 	subs       map[uint64]chan struct{}
 	subSeq     uint64
@@ -285,6 +286,8 @@ type tracked struct {
 	contacted  bool
 	serving    bool
 	dataAt     time.Time
+	hostStamp  receiveStamp
+	guestStamp receiveStamp
 	guestTotal int64
 	guestAt    time.Time
 	peer       *x509.Certificate
@@ -633,16 +636,27 @@ func (t *Tracker) observeLocked(o ledger.Observation) {
 	}
 }
 
+// receiveStamp is the observation time an agent reported for a source of
+// readings and the time the tracker took it as.
+type receiveStamp struct{ reported, at time.Time }
+
 // receivedLocked caps an agent-reported observation time at the
 // coordinator's clock. Freshness compares observation times with that
 // clock (DESIGN §4.4), so an agent whose clock runs ahead would otherwise
-// never turn stale: one future-dated reading would stay the newest.
-// Agents whose clock runs behind by more than staleAfter still turn stale;
-// agents need synchronized clocks.
-func (t *Tracker) receivedLocked(at time.Time) time.Time {
-	if now := t.opts.Clock.Now(); at.After(now) {
-		return now
+// never turn stale: one future-dated reading would stay the newest. A
+// reading repeated with the same reported time keeps the time it was first
+// taken as (*prev), so a frozen reading is not made fresh again by every
+// poll. Agents whose clock runs behind by more than staleAfter still turn
+// stale; agents need synchronized clocks.
+func (t *Tracker) receivedLocked(prev *receiveStamp, reported time.Time) time.Time {
+	if !prev.at.IsZero() && reported.Equal(prev.reported) {
+		return prev.at
 	}
+	at := reported
+	if now := t.opts.Clock.Now(); at.After(now) {
+		at = now
+	}
+	*prev = receiveStamp{reported: reported, at: at}
 	return at
 }
 
@@ -652,7 +666,7 @@ func (t *Tracker) observeHost(a *tracked, info HostInfo) {
 	if !t.trackedLocked(a) {
 		return
 	}
-	info.ObservedAt = t.receivedLocked(info.ObservedAt)
+	info.ObservedAt = t.receivedLocked(&a.hostStamp, info.ObservedAt)
 	t.observeLocked(ledger.Observation{Host: info.Observation()})
 	a.dataAt = later(a.dataAt, info.ObservedAt)
 	t.seenLocked(a, info.Agent.Version)
@@ -667,9 +681,13 @@ func (t *Tracker) observeVMs(a *tracked, vms []VMInfo) {
 		return
 	}
 	vms = slices.Clone(vms)
+	stamps := make(map[string]receiveStamp, len(vms))
 	for i := range vms {
-		vms[i].ObservedAt = t.receivedLocked(vms[i].ObservedAt)
+		st := t.vmStamps[vms[i].Name]
+		vms[i].ObservedAt = t.receivedLocked(&st, vms[i].ObservedAt)
+		stamps[vms[i].Name] = st
 	}
+	t.vmStamps = stamps
 	t.observeLocked(vmsObservation(vms))
 	t.vms = make(map[string]VMInfo, len(vms))
 	for _, v := range vms {
@@ -686,7 +704,7 @@ func (t *Tracker) observeGuest(a *tracked, ep Endpoint, m GuestMemory) {
 	if !t.trackedLocked(a) {
 		return
 	}
-	m.ObservedAt = t.receivedLocked(m.ObservedAt)
+	m.ObservedAt = t.receivedLocked(&a.guestStamp, m.ObservedAt)
 	t.observeLocked(ledger.Observation{Guest: m.Observation(ep.VM)})
 	a.dataAt = later(a.dataAt, m.ObservedAt)
 	if !m.ObservedAt.Before(a.guestAt) {
