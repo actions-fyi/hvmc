@@ -15,14 +15,16 @@ import (
 
 	"github.com/matfax/hvmc/internal/agent"
 	"github.com/matfax/hvmc/internal/agent/guest"
+	"github.com/matfax/hvmc/internal/agent/host"
 	"github.com/matfax/hvmc/internal/policy"
 	"github.com/matfax/hvmc/internal/version"
 )
 
-// agentServices maps a role to the constructor of its gRPC service. A role
-// that is not listed (until internal/agent/host adds itself: the host
-// agent) makes `agent run` report it as not implemented.
+// agentServices maps a role to the constructor of its gRPC service: the
+// host agent (internal/agent/host) and the guest agent
+// (internal/agent/guest).
 var agentServices = map[agent.Role]func() agent.Service{
+	agent.RoleHost:  host.New,
 	agent.RoleGuest: func() agent.Service { return guest.New() },
 }
 

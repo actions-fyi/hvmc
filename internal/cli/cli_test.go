@@ -36,7 +36,7 @@ func runCLIEnv(t *testing.T, e env, args ...string) (code int, stdout, stderr st
 func TestStubs(t *testing.T) {
 	for _, path := range []string{
 		"serve",
-		"agent install", "agent uninstall", "agent status", "agent policy sync",
+		"agent install", "agent uninstall", "agent status",
 		"check",
 		"test run", "test list", "test logs",
 	} {

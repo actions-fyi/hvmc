@@ -127,21 +127,15 @@ func TestAgentRun(t *testing.T) {
 	if code, _, errOut := runCLI(t, "agent", "run", "--config", cfg, "--state-dir", dir); code != ExitFailure || errOut == "" {
 		t.Errorf("without config: exit %d, stderr %q", code, errOut)
 	}
-	if err := os.WriteFile(cfg, []byte("role: host\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code, _, errOut := runCLI(t, "agent", "run", "--config", cfg, "--state-dir", dir)
-	if want := "Error: hvmc agent run: role host: not implemented yet\n"; code != ExitFailure || errOut != want {
-		t.Errorf("exit %d, stderr %q; want %q", code, errOut, want)
-	}
-
-	// The guest role is implemented: without enrollment it stops at the
+	// Both roles are implemented: without enrollment they stop at the
 	// missing certificate.
-	if err := os.WriteFile(cfg, []byte("role: guest\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code, _, errOut = runCLI(t, "agent", "run", "--config", cfg, "--state-dir", dir)
-	if code != ExitFailure || !strings.Contains(errOut, "not enrolled") {
-		t.Errorf("guest: exit %d, stderr %q; want the enrollment error", code, errOut)
+	for _, role := range []string{"host", "guest"} {
+		if err := os.WriteFile(cfg, []byte("role: "+role+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, _, errOut := runCLI(t, "agent", "run", "--config", cfg, "--state-dir", dir)
+		if code != ExitFailure || !strings.Contains(errOut, "not enrolled") {
+			t.Errorf("%s: exit %d, stderr %q; want the enrollment error", role, code, errOut)
+		}
 	}
 }

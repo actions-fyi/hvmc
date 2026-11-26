@@ -60,7 +60,8 @@ type HostAgentClient interface {
 	// without a change.
 	//
 	// Errors: INVALID_ARGUMENT (bytes not positive or not a multiple of 2 MiB),
-	// NOT_FOUND, FAILED_PRECONDITION (fixed VM, Dynamic Memory VM),
+	// NOT_FOUND, FAILED_PRECONDITION (fixed VM, Dynamic Memory VM, VM name
+	// shared by several VMs),
 	// PERMISSION_DENIED (VM not in the policy, value outside [min, max]),
 	// RESOURCE_EXHAUSTED (host out of memory on grow), ABORTED (guest refused
 	// shrink, possibly partial), UNAVAILABLE, DEADLINE_EXCEEDED.
@@ -70,7 +71,8 @@ type HostAgentClient interface {
 	//
 	// Errors: INVALID_ARGUMENT (neither limit set, value not positive or not a
 	// multiple of 2 MiB, minimum above maximum), NOT_FOUND, FAILED_PRECONDITION
-	// (fixed VM, static VM, maximum lowered, minimum raised), PERMISSION_DENIED
+	// (fixed VM, static VM, maximum lowered, minimum raised, VM name shared by
+	// several VMs), PERMISSION_DENIED
 	// (VM not in the policy, minimum below the policy's min, maximum above the
 	// policy's max), UNAVAILABLE, DEADLINE_EXCEEDED.
 	SetDynamicLimits(ctx context.Context, in *SetDynamicLimitsRequest, opts ...grpc.CallOption) (*SetDynamicLimitsResponse, error)
@@ -190,7 +192,8 @@ type HostAgentServer interface {
 	// without a change.
 	//
 	// Errors: INVALID_ARGUMENT (bytes not positive or not a multiple of 2 MiB),
-	// NOT_FOUND, FAILED_PRECONDITION (fixed VM, Dynamic Memory VM),
+	// NOT_FOUND, FAILED_PRECONDITION (fixed VM, Dynamic Memory VM, VM name
+	// shared by several VMs),
 	// PERMISSION_DENIED (VM not in the policy, value outside [min, max]),
 	// RESOURCE_EXHAUSTED (host out of memory on grow), ABORTED (guest refused
 	// shrink, possibly partial), UNAVAILABLE, DEADLINE_EXCEEDED.
@@ -200,7 +203,8 @@ type HostAgentServer interface {
 	//
 	// Errors: INVALID_ARGUMENT (neither limit set, value not positive or not a
 	// multiple of 2 MiB, minimum above maximum), NOT_FOUND, FAILED_PRECONDITION
-	// (fixed VM, static VM, maximum lowered, minimum raised), PERMISSION_DENIED
+	// (fixed VM, static VM, maximum lowered, minimum raised, VM name shared by
+	// several VMs), PERMISSION_DENIED
 	// (VM not in the policy, minimum below the policy's min, maximum above the
 	// policy's max), UNAVAILABLE, DEADLINE_EXCEEDED.
 	SetDynamicLimits(context.Context, *SetDynamicLimitsRequest) (*SetDynamicLimitsResponse, error)
