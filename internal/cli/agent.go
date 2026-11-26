@@ -15,6 +15,7 @@ import (
 
 	"github.com/matfax/hvmc/internal/agent"
 	"github.com/matfax/hvmc/internal/agent/host"
+	"github.com/matfax/hvmc/internal/agent/svc"
 	"github.com/matfax/hvmc/internal/policy"
 	"github.com/matfax/hvmc/internal/version"
 )
@@ -115,24 +116,41 @@ func newAgentRunCommand() *cobra.Command {
 	return cmd
 }
 
+// runAgent runs the agent in the foreground until SIGINT or SIGTERM, or,
+// when the Windows Service Control Manager started it, as the service.
 func runAgent(cmd *cobra.Command, _ []string) error {
 	paths := agentPaths(cmd)
-	cfg, err := agent.LoadConfig(paths.Config)
+	isService, err := svc.IsService()
 	if err != nil {
 		return err
 	}
-	newService, ok := agentServices[cfg.Role]
-	if !ok {
-		return fmt.Errorf("%s: role %s: %w", cmd.CommandPath(), cfg.Role, ErrNotImplemented)
+	stderr := cmd.ErrOrStderr()
+	if isService {
+		stderr = nil // no console: the Event Log and the log file
 	}
-	log, closeLog, err := agent.NewLogger(agent.LogOptions{Stderr: cmd.ErrOrStderr(), Dir: paths.Logs})
+	log, closeLog, err := agent.NewLogger(agent.LogOptions{Stderr: stderr, Dir: paths.Logs})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = closeLog() }()
-	a, err := agent.New(agent.Options{
-		Config: cfg, Paths: paths, Service: newService(), Logger: log, Version: version.String(),
-	})
+	clk := agent.SystemClock()
+	build := func(onTick func()) (svc.Agent, error) {
+		cfg, err := agent.LoadConfig(paths.Config)
+		if err != nil {
+			return nil, err
+		}
+		newService, ok := agentServices[cfg.Role]
+		if !ok {
+			return nil, fmt.Errorf("%s: role %s: %w", cmd.CommandPath(), cfg.Role, ErrNotImplemented)
+		}
+		return agent.New(agent.Options{
+			Config: cfg, Paths: paths, Service: newService(), Clock: clk, Logger: log, Version: version.String(), OnTick: onTick,
+		})
+	}
+	if isService {
+		return svc.RunService(log, clk, build)
+	}
+	a, err := build(nil)
 	if err != nil {
 		return err
 	}
