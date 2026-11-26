@@ -385,6 +385,13 @@ func (t *Tracker) addOrUpdateLocked(ep Endpoint) {
 	}
 }
 
+// trackedLocked reports whether a is still the tracker's record of its
+// agent. removeLocked stops an agent's workers without waiting for them, so
+// a poll or watch in flight can still deliver a result for a removed (or
+// removed and re-added) agent; such results must not change the ledger,
+// metrics or events, which removeLocked has already reset.
+func (t *Tracker) trackedLocked(a *tracked) bool { return t.agents[a.ep.Name] == a }
+
 func (t *Tracker) removeLocked(name string, a *tracked) {
 	a.loop.stop()
 	a.healthW.stop()
@@ -702,6 +709,9 @@ func (t *Tracker) syncPolicy(ctx context.Context, a *tracked, h Host, info HostI
 	st := a.policy.Sync(ctx, h, hc, info)
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.trackedLocked(a) {
+		return
+	}
 	prev := a.st.Policy
 	a.st.Policy = &st
 	t.policyEventsLocked(a, prev, st)
@@ -775,6 +785,9 @@ func (t *Tracker) stateLocked(a *tracked, now time.Time) (ledger.AgentState, str
 }
 
 func (t *Tracker) evaluateLocked(a *tracked) {
+	if !t.trackedLocked(a) {
+		return
+	}
 	now := t.opts.Clock.Now()
 	t.certLocked(a, now)
 	s, reason, msg := t.stateLocked(a, now)
@@ -820,6 +833,9 @@ func (a *tracked) knownCert() *x509.Certificate {
 }
 
 func (t *Tracker) certLocked(a *tracked, now time.Time) {
+	if !t.trackedLocked(a) {
+		return
+	}
 	c := a.knownCert()
 	if c == nil {
 		return

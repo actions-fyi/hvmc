@@ -1,6 +1,7 @@
 package agentclient_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -255,6 +256,30 @@ func TestConfigureRemovesAgents(t *testing.T) {
 	}
 	if _, ok := tr.Offset("vm-a"); ok {
 		t.Error("offset kept for a removed agent")
+	}
+}
+
+// A check that was in flight when its agent was removed (it returns
+// context.Canceled) must not bring the agent's ledger state or metrics back.
+func TestRemovedAgentIgnoresInFlightResults(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	tr.Poll(e.ctx)
+	e.wantState(tr, "vm-a", ledger.AgentReady)
+	old := agentclient.TrackedForTest(tr, "vm-a")
+	e.hc.Spec.VMs = nil
+	must(t, tr.Configure(e.ctx, e.hc))
+	for range agentclient.DefaultFailureThreshold {
+		agentclient.RecordCheckForTest(tr, old, context.Canceled)
+	}
+	if s := e.led.Snapshot().Agents["vm-a"]; s != ledger.AgentUnknown {
+		t.Errorf("ledger state of the removed vm-a = %s, want Unknown", s)
+	}
+	if v := e.gauge("hvmc_agent_up", map[string]string{"agent": "vm-a"}); v != -1 {
+		t.Errorf("hvmc_agent_up for the removed vm-a = %v, want no series", v)
+	}
+	if n := e.events.count("vm-a", agentclient.ReasonAgentUnreachable); n != 0 {
+		t.Errorf("%d Unreachable events for the removed vm-a", n)
 	}
 }
 

@@ -1,6 +1,7 @@
 package agentclient_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -323,5 +324,26 @@ func TestLedgerConversions(t *testing.T) {
 	m := agentclient.GuestMemory{Total: 4 * gib, Available: gib, ObservedAt: at}
 	if o := m.Observation("vm-a"); o.CommitLimit != 0 || o.CommitAvailable != 0 || o.Total != 4*gib {
 		t.Errorf("Linux guest observation = %+v", o)
+	}
+}
+
+// A pool without a TLS configuration refuses to dial unless plaintext was
+// asked for explicitly, so a missing configuration fails closed.
+func TestPoolWithoutTLSFailsClosed(t *testing.T) {
+	ctx := t.Context()
+	eps := []agentclient.Endpoint{{
+		Name: "host", Role: agentclient.RoleHost, Address: "127.0.0.1", Port: 9443, ServerName: "host.example.com",
+	}}
+
+	p := agentclient.NewPool(agentclient.PoolOptions{})
+	t.Cleanup(p.Close)
+	if err := p.Sync(ctx, eps); err == nil || !strings.Contains(err.Error(), "no TLS configuration") {
+		t.Errorf("Sync() without TLS = %v, want a no TLS configuration error", err)
+	}
+
+	insecure := agentclient.NewPool(agentclient.PoolOptions{Insecure: true})
+	t.Cleanup(insecure.Close)
+	if err := insecure.Sync(ctx, eps); err != nil {
+		t.Errorf("Sync() with Insecure = %v", err)
 	}
 }

@@ -180,9 +180,13 @@ type PoolOptions struct {
 	// and the hvmc CA as RootCAs, e.g. pki.Reloader.ClientTLSConfig. Each
 	// agent's connection uses a clone with ServerName set to the agent's
 	// Endpoint.ServerName, so an agent is accepted only with a certificate
-	// chained to the CA that names the configured agent. Nil means
-	// plaintext, for in-process fake agents only.
+	// chained to the CA that names the configured agent. Required unless
+	// Insecure is set: without either, every agent fails to dial, so a
+	// configuration that was not passed through fails closed.
 	TLS *tls.Config
+	// Insecure dials plaintext without verifying the agent, for in-process
+	// fake agents only (devFakeAgents). It applies only while TLS is nil.
+	Insecure bool
 	// Clock, if set, is the time certificates are verified at.
 	Clock Clock
 	// Resolver derives dial addresses; nil means DefaultResolver(nil).
@@ -484,6 +488,9 @@ func (c *agentConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, method
 
 // dial creates (without connecting) a client connection to target.
 func dial(opts PoolOptions, ep Endpoint, target string) (*grpc.ClientConn, error) {
+	if opts.TLS == nil && !opts.Insecure {
+		return nil, fmt.Errorf("agent %s: no TLS configuration (set PoolOptions.TLS, or Insecure for fake agents)", ep.Name)
+	}
 	creds := insecure.NewCredentials()
 	if opts.TLS != nil {
 		if ep.ServerName == "" {
