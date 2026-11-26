@@ -334,9 +334,6 @@ func (s *Sim) enter(ctx context.Context, agent, method string, cmdlet bool) erro
 	return s.wait(ctx, nil, timeout)
 }
 
-// wait blocks until done is closed (nil), ctx ends (its error) or the
-// timeout passes on the clock (DEADLINE_EXCEEDED); a negative timeout never
-// passes.
 // hangCheck blocks a health Check until ctx ends when the agent's behaviour
 // lists "Check" (or "*") in Hang. Unlike enter it neither counts the call
 // nor fails for an agent that is gone: health keeps its own state.
@@ -351,6 +348,9 @@ func (s *Sim) hangCheck(ctx context.Context, agent string) error {
 	return s.wait(ctx, nil, -1)
 }
 
+// wait blocks until done is closed (nil), ctx ends (its error) or the
+// timeout passes on the clock (DEADLINE_EXCEEDED); a negative timeout never
+// passes.
 func (s *Sim) wait(ctx context.Context, done <-chan struct{}, timeout time.Duration) error {
 	var timeoutC <-chan time.Time
 	if timeout >= 0 {
