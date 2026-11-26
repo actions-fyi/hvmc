@@ -11,6 +11,7 @@ workflows:
         - 'actions/setup-go@v7.1.0'
     '.github/workflows/claude.yml': []
     '.github/workflows/codeql.yml': []
+    '.github/workflows/coverage.yml': []
     '.github/workflows/flowpact.yml': []
     '.github/workflows/label-sync.yml': []
     '.github/workflows/pr-metadata.yml': []

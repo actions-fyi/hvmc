@@ -43,7 +43,8 @@ jobs:
   workflows:
     name: Workflows
     # A push only dispatches; _workflow-sync.yml skips itself in the source.
-    if: github.event_name != 'push'
+    # Not in a fork: Octo STS grants the sync token only to the org's repositories.
+    if: github.repository_owner == 'actions-fyi' && github.event_name != 'push'
     # What the workflows job of _workflow-sync.yml declares; a called job can't get more.
     permissions:
       contents: read # Declared by the workflows job

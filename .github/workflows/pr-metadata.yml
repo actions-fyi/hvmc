@@ -1,9 +1,11 @@
 name: PR Metadata
-# Check Metadata is the org ruleset workflow that checks the title. Its runs on pull requests start
+# Lint Metadata is the org ruleset workflow that checks the title. Its runs on pull requests start
 # this listener, which runs with the secrets and a write token, for fork pull requests too.
+# "Check Metadata" is the old name. It stays until the org ruleset workflow of
+# actions-fyi/ruleset-workflows is renamed; after that it can be removed.
 on:
   workflow_run:
-    workflows: ["Check Metadata"]
+    workflows: ["Lint Metadata"]
     types: [completed]
 
 permissions: {}
@@ -11,9 +13,11 @@ permissions: {}
 jobs:
   metadata:
     name: Metadata
+    # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
+    if: github.repository_owner == 'actions-fyi'
     cache-mode: none
     permissions:
-      actions: write # Re-run the failed Check Metadata jobs
+      actions: write # Re-run the failed Lint Metadata jobs
       contents: read # Check out the default branch for the screen jobs
       id-token: write # Log in to OpenBao for Prompt Guard
       issues: write # Read the repository's labels, label the pull request, and escalate a flag
