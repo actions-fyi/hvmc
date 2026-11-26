@@ -331,12 +331,10 @@ func certificatesPEM(data []byte) ([][]byte, error) {
 // operator confirms it with `hvmc agent policy sync` (or during `hvmc
 // agent install`). The returned bool reports whether a policy is pending.
 func (e *Enrollment) Write(paths Paths) (pending bool, err error) {
-	if err := os.MkdirAll(paths.State, 0o700); err != nil {
-		return false, err
-	}
-	// On Windows the mode above sets no ACL: restrict the directory to
-	// SYSTEM, Administrators and the service before writing the key.
-	if err := fileacl.SecureDir(paths.State); err != nil {
+	// On Windows a mode sets no ACL: the directory is created with the
+	// protected ACL (SYSTEM, Administrators, the service) in one call, and
+	// an existing one gets it, before the key is written.
+	if err := fileacl.MkdirSecure(paths.State); err != nil {
 		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(paths.Config), 0o750); err != nil {
