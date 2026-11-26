@@ -596,8 +596,10 @@ func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	s.setNoPwsh(nil)
-	s.setCurrent(w)
+	// The uptime counts from before the worker is published, so whoever
+	// sees it running also sees its start time.
 	started := s.opts.Clock.Now()
+	s.setCurrent(w)
 	select {
 	case <-w.done:
 		s.setCurrent(nil)
