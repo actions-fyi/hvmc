@@ -45,9 +45,10 @@ type PolicyStatus struct {
 }
 
 // PolicySync compares a host agent's active policy with the desired one
-// and proposes the desired policy on mismatch, once per digest: not again
-// while the agent reports it as pending, and not again after it was sent,
-// unless the proposal failed with a retryable error. One PolicySync serves
+// and proposes the desired policy on mismatch, once per digest and drift:
+// not again while the agent reports it as pending, and not again after it
+// was sent, unless the proposal failed with a retryable error or the agent
+// was in sync in between (its active policy later drifted away). One PolicySync serves
 // one host agent; it is safe for concurrent use.
 type PolicySync struct {
 	mu   sync.Mutex
@@ -65,6 +66,8 @@ func (s *PolicySync) Sync(ctx context.Context, h Host, hc *v1alpha1.HostConfig, 
 	defer s.mu.Unlock()
 	switch {
 	case st.InSync:
+		// A later drift away from Desired is a new mismatch: propose again.
+		s.sent, s.err = "", nil
 		return st
 	case st.Pending == st.Desired:
 		s.sent, s.err = st.Desired, nil

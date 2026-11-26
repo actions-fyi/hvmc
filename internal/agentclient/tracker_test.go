@@ -10,6 +10,7 @@ import (
 	"github.com/matfax/hvmc/internal/agentclient"
 	"github.com/matfax/hvmc/internal/fake"
 	"github.com/matfax/hvmc/internal/ledger"
+	"github.com/matfax/hvmc/internal/policy"
 )
 
 // grant puts a 1Gi lease on vm-a into Granted (no resize needed: vm-a has
@@ -430,5 +431,40 @@ func TestDesiredPolicy(t *testing.T) {
 	}
 	if e.hc.Status.ObservedHost != nil {
 		t.Error("DesiredPolicy changed its input")
+	}
+}
+
+// proposals counts ProposePolicy calls; the other Host methods are unused.
+type proposals struct {
+	agentclient.Host
+	n int
+}
+
+func (p *proposals) ProposePolicy(context.Context, policy.Policy) error {
+	p.n++
+	return nil
+}
+
+// A host that was in sync and drifts away again gets the derived policy
+// proposed again: once per drift, not once per process.
+func TestPolicyReproposedAfterDrift(t *testing.T) {
+	e := newEnv(t)
+	desired := agentclient.DesiredPolicy(e.hc, 64*gib).Digest()
+	h := &proposals{}
+	var s agentclient.PolicySync
+	sync := func(active string) agentclient.PolicyStatus {
+		return s.Sync(e.ctx, h, e.hc, agentclient.HostInfo{Total: 64 * gib, PolicyDigest: active})
+	}
+
+	sync("before")        // mismatch: proposed
+	sync("before")        // still the same mismatch: not again
+	sync(desired)         // the operator activated it
+	st := sync("drifted") // the active policy changed on the host
+	if h.n != 2 || !st.Proposed {
+		t.Errorf("ProposePolicy called %d times, proposed on drift = %v; want 2, true", h.n, st.Proposed)
+	}
+	sync("drifted")
+	if h.n != 2 {
+		t.Errorf("ProposePolicy called %d times for one drift, want 2", h.n)
 	}
 }
