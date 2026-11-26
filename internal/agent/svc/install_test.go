@@ -296,3 +296,42 @@ func TestInstallStepFails(t *testing.T) {
 		t.Errorf("calls after the failure (-want +got):\n%s", diff)
 	}
 }
+
+// TestInstallRefusesBrokenEnrollment: part of an enrollment, or an invalid
+// one, is neither kept nor enrolled over.
+func TestInstallRefusesBrokenEnrollment(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(agent.Paths) error
+	}{
+		{"no serving pair", func(p agent.Paths) error { return os.Remove(p.Serving()) }},
+		{"no CA", func(p agent.Paths) error { return os.Remove(p.CA()) }},
+		{"config does not parse", func(p agent.Paths) error { return os.WriteFile(p.Config, []byte("role: [\n"), 0o600) }},
+		{"config only", func(p agent.Paths) error {
+			return errors.Join(os.Remove(p.Serving()), os.Remove(p.CA()))
+		}},
+		{"foreign CA", func(p agent.Paths) error {
+			other := newEnrollEndpoint(t, 9443, 9090)
+			return os.WriteFile(p.CA(), other.CA.CertPEM(), 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newInstallEnv(t, http.StatusOK)
+			p := newFakePlatform()
+			if err := Install(testCtx(t), p, e.options(agent.RoleGuest, "")); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.damage(e.paths); err != nil {
+				t.Fatal(err)
+			}
+			p.calls = nil
+			err := Install(testCtx(t), p, e.options(agent.RoleGuest, ""))
+			if !errors.Is(err, ErrBrokenEnrollment) || !strings.Contains(err.Error(), "hvmc agent enroll") {
+				t.Errorf("Install: %v, want ErrBrokenEnrollment", err)
+			}
+			if len(p.recorded()) != 0 || e.enroll.used.Load() != 1 {
+				t.Errorf("calls %v, enrollments %d", p.recorded(), e.enroll.used.Load())
+			}
+		})
+	}
+}

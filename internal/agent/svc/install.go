@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -61,9 +60,6 @@ type InstallOptions struct {
 	Out io.Writer
 	// ReadyTimeout bounds the wait for readiness (0: DefaultReadyTimeout).
 	ReadyTimeout time.Duration
-
-	// noStart leaves the service stopped (tests that adjust it first).
-	noStart bool
 }
 
 // plan is what Install found before changing anything.
@@ -106,9 +102,6 @@ func Install(ctx context.Context, p Platform, o InstallOptions) error {
 	if err := configureMachine(ctx, p, o, pl, cfg, out); err != nil {
 		return err
 	}
-	if o.noStart {
-		return out.err
-	}
 	out.f("Starting the service...\n")
 	if err := p.StartService(ctx); err != nil {
 		return fmt.Errorf("start service %s: %w", ServiceName, err)
@@ -142,7 +135,7 @@ func prepare(p Platform, o InstallOptions) (plan, error) {
 	if o.Role != "" && o.Role != agent.RoleHost && o.Role != agent.RoleGuest {
 		return plan{}, fmt.Errorf("%w: --role must be %s or %s, got %q", ErrUsage, agent.RoleHost, agent.RoleGuest, o.Role)
 	}
-	pl, err := installed(o.Paths)
+	pl, err := installed(o.Paths, o.Clock)
 	if err != nil {
 		return plan{}, err
 	}
@@ -175,22 +168,52 @@ func prepare(p Platform, o InstallOptions) (plan, error) {
 	return pl, nil
 }
 
-// installed reports whether the machine is enrolled: agent.yaml loads and
-// the pinned CA and the serving pair exist.
-func installed(paths agent.Paths) (plan, error) {
-	cfg, err := agent.LoadConfig(paths.Config)
-	if errors.Is(err, fs.ErrNotExist) {
-		return plan{}, nil
-	}
-	if err != nil {
-		return plan{}, err
-	}
-	for _, f := range []string{paths.CA(), paths.Serving()} {
-		if _, err := os.Stat(f); err != nil {
-			return plan{}, nil //nolint:nilerr // a missing file means not enrolled yet
+// installed reports whether the machine is enrolled. A machine with none
+// of the enrollment's files is not; one with any of them must hold a
+// complete, valid enrollment (agent.yaml parses, the pinned CA and the
+// serving pair load, the certificate chains to the CA and is valid now),
+// which install then keeps. Anything else is refused rather than enrolled
+// over.
+func installed(paths agent.Paths, clk agent.Clock) (plan, error) {
+	found := false
+	for _, f := range []string{paths.Config, paths.CA(), paths.Serving(), paths.PreviousServing()} {
+		if _, err := os.Stat(f); err == nil {
+			found = true
 		}
 	}
+	if !found {
+		return plan{}, nil
+	}
+	cfg, err := loadEnrollment(paths, clk)
+	if err != nil {
+		return plan{}, fmt.Errorf("%w in %s: %w; repair it with `hvmc agent enroll`, or remove it with `hvmc agent uninstall --remove-state`",
+			ErrBrokenEnrollment, paths.State, err)
+	}
 	return plan{role: cfg.Role, enrolled: true}, nil
+}
+
+// ErrBrokenEnrollment means the machine holds part of an enrollment, or an
+// invalid one.
+var ErrBrokenEnrollment = errors.New("the existing enrollment is incomplete or invalid")
+
+func loadEnrollment(paths agent.Paths, clk agent.Clock) (agent.Config, error) {
+	cfg, err := agent.LoadConfig(paths.Config)
+	if err != nil {
+		return agent.Config{}, err
+	}
+	certs, err := agent.OpenCertStore(paths, clk, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return agent.Config{}, err
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(certs.CA())
+	_, err = certs.Leaf().Verify(x509.VerifyOptions{
+		Roots: roots, CurrentTime: clk.Now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err != nil {
+		return agent.Config{}, fmt.Errorf("serving certificate: %w", err)
+	}
+	return cfg, nil
 }
 
 func checkEnrollFlags(o InstallOptions) error {
