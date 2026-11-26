@@ -61,8 +61,10 @@ func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
-	go wd.run(ctx, h.hung)
-	if err := h.serve(a.Started(), done, cancel, req, status); err != nil {
+	// The watchdog counts from the start of serving, not from the build:
+	// a slow start (certificates, a cold disk) is not a hung loop.
+	armed := func() { go wd.arm(ctx, h.hung) }
+	if err := h.serve(a.Started(), armed, done, cancel, req, status); err != nil {
 		h.fail(err)
 		return true, exitFailure
 	}
@@ -71,11 +73,14 @@ func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<
 }
 
 // serve reports the service's state until the agent's Run returns.
-func (h *handler) serve(started <-chan struct{}, done <-chan error, stop func(), req <-chan svc.ChangeRequest, status chan<- svc.Status) error {
+func (h *handler) serve(started <-chan struct{}, onStarted func(), done <-chan error, stop func(),
+	req <-chan svc.ChangeRequest, status chan<- svc.Status,
+) error {
 	for {
 		select {
 		case <-started:
 			started = nil
+			onStarted()
 			status <- svc.Status{State: svc.Running, Accepts: accepted}
 		case err := <-done:
 			status <- svc.Status{State: svc.StopPending}

@@ -191,7 +191,10 @@ func TestWatchdog(t *testing.T) {
 	hung := make(chan time.Duration, 1)
 	ctx, cancel := context.WithCancel(testCtx(t))
 	defer cancel()
-	go w.run(ctx, func(age time.Duration) { hung <- age })
+	// Building and starting the agent took longer than the timeout: arm
+	// counts from the start of serving.
+	clk.Advance(2 * WatchdogTimeout)
+	go w.arm(ctx, func(age time.Duration) { hung <- age })
 	// Ticks keep it quiet.
 	for range 4 {
 		if err := clk.BlockUntil(ctx, 1); err != nil {

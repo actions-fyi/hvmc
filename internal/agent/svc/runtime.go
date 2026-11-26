@@ -42,6 +42,13 @@ func (w *watchdog) Tick() {
 	w.last = w.clk.Now()
 }
 
+// arm records a tick now and runs the watchdog: the agent calls it once it
+// serves, so the time to build and start the agent never counts.
+func (w *watchdog) arm(ctx context.Context, hung func(age time.Duration)) {
+	w.Tick()
+	w.run(ctx, hung)
+}
+
 // run checks every timeout/2 until ctx ends; when the last tick is older
 // than the timeout it calls hung with that age once and returns.
 func (w *watchdog) run(ctx context.Context, hung func(age time.Duration)) {
