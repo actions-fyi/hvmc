@@ -265,13 +265,14 @@ Besides `vms`, `agent.yaml` holds `name` (the agent's HostConfig name, for logs 
 ### 4.4 Guest agent API (`hvmc.agent.v1.GuestAgent`) and verification
 
 ```proto
-rpc GetMemory(GetMemoryRequest) returns (GuestMemory);   // total, available, observed_at; Windows: commit_limit, commit_available
-rpc WatchMemory(WatchMemoryRequest) returns (stream GuestMemory);  // every 5 s and on change
+rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse);   // GuestMemory (total, available, observed_at; Windows: commit_limit, commit_available) + AgentInfo
+rpc WatchMemory(WatchMemoryRequest) returns (stream WatchMemoryResponse);  // GuestMemory: on connect, every 5 s and on change
 ```
 
 - Linux: `MemTotal`, `MemAvailable` from `/proc/meminfo`.
 - Windows: `GlobalMemoryStatusEx` — total physical (`ullTotalPhys`), available (`ullAvailPhys`), commit limit (`ullTotalPageFile`) and available commit (`ullAvailPageFile`). The commit figures feed the page-file check (§10).
 - `used = total − available`.
+- The agent polls its memory source every 1 s (the *poll interval* of the guest readiness check, §4.8). `GetMemory` reads the source at call time. `WatchMemory` sends a fresh reading on connect and every 5 s, and the poller's reading whenever any of its values differs from the last one sent (exact comparison, so at most one change message per poll). `observed_at` is the agent clock's time of the read. An unreadable source answers `UNAVAILABLE`, ends open `WatchMemory` streams with `UNAVAILABLE` and fails readiness until the next successful read.
 
 Grow verification after `SetStartup`: on first contact the coordinator records `offset(vm) = assigned − guest total` (firmware/kernel reservations). Verified when `guest total ≥ new assigned − offset − step/2`. (Only Windows VMs are ever resized, so there is no Linux hot-add onlining to check.) Timeout 60 s (configurable); on timeout the lease fails and the reservation rolls back; the memory stays assigned and is reused or shrunk later.
 
