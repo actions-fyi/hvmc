@@ -48,6 +48,8 @@ type env struct {
 	// rootCAs verify TLS endpoints hvmc connects to (hvmc agent enroll);
 	// nil means the system roots.
 	rootCAs *x509.CertPool
+	// stdin answers prompts (hvmc agent policy sync); nil means os.Stdin.
+	stdin io.Reader
 }
 
 func defaultEnv() env { return env{now: time.Now} }
@@ -63,6 +65,9 @@ func execute(e env, args []string, stdout, stderr io.Writer) int {
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	if e.stdin != nil {
+		root.SetIn(e.stdin)
+	}
 	cmd, err := root.ExecuteContextC(context.Background())
 	if err == nil {
 		return ExitOK
