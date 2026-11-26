@@ -15,6 +15,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/matfax/hvmc/internal/fileacl"
 	"github.com/matfax/hvmc/internal/pki"
 )
 
@@ -172,7 +173,8 @@ func (c Config) Allows(cn string) bool { return slices.Contains(c.AllowedClients
 // file of a host agent gets `vms: []`, the empty policy that allows no
 // write, so the agent starts read-only until the operator activates a
 // policy. Keys and comments are rewritten in sorted order; the file is
-// replaced atomically with mode 0600.
+// replaced atomically with mode 0600 and, on Windows, the read-only ACL of
+// [fileacl.SecureConfig].
 func MergeConfigFile(path string, c Config) error {
 	top := map[string]any{}
 	old, err := os.ReadFile(path) //nolint:gosec // G304: the path is the agent's own configuration file.
@@ -205,7 +207,7 @@ func MergeConfigFile(path string, c Config) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, out, 0o600)
+	return writeFileSecured(path, out, 0o600, fileacl.SecureConfig)
 }
 
 // Paths locates the agent's files.
@@ -266,8 +268,16 @@ func (p Paths) PendingPolicy() string { return filepath.Join(p.State, pendingPol
 func (p Paths) AuditLog() string { return filepath.Join(p.State, auditFile) }
 
 // writeFileAtomic replaces path with data: temporary file in the same
-// directory, sync, chmod, rename.
-func writeFileAtomic(path string, data []byte, perm fs.FileMode) (err error) {
+// directory, sync, chmod, rename. On Windows the file inherits the ACL of
+// the directory (see [fileacl.SecureDir]).
+func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	return writeFileSecured(path, data, perm, nil)
+}
+
+// writeFileSecured is [writeFileAtomic] that, when secure is set, also
+// applies secure to the temporary file before the rename, so path never
+// exists with weaker access.
+func writeFileSecured(path string, data []byte, perm fs.FileMode, secure func(string) error) (err error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -289,6 +299,11 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) (err error) {
 	}
 	if err = os.Chmod(tmp, perm); err != nil {
 		return err
+	}
+	if secure != nil {
+		if err = secure(tmp); err != nil {
+			return err
+		}
 	}
 	return os.Rename(tmp, path)
 }

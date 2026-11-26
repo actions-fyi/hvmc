@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
+	"github.com/matfax/hvmc/internal/fileacl"
 	"github.com/matfax/hvmc/internal/policy"
 )
 
@@ -200,7 +201,8 @@ func (s *PolicyStore) Activate(digest string) error {
 	if p.Digest() != digest {
 		return fmt.Errorf("%w: confirmed %s, pending is %s", ErrPendingChanged, digest, p.Digest())
 	}
-	if err := policy.Save(s.configPath, p); err != nil {
+	// agent.yaml stays read-only for the service (DESIGN §4.3).
+	if err := policy.SaveSecured(s.configPath, p, fileacl.SecureConfig); err != nil {
 		return err
 	}
 	if err := os.Remove(s.pendingPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
