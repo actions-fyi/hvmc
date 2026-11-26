@@ -110,7 +110,7 @@ func TestMkdirSecure(t *testing.T) {
 	if err := os.WriteFile(f, []byte("key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checkDACL(t, f, "D:", "(A;ID;"+modifyAccess+";;;"+sid+")")
+	checkDACL(t, f, "", "(A;ID;"+modifyAccess+";;;"+sid+")")
 
 	// An existing directory with the inherited ACL is secured.
 	existing := filepath.Join(t.TempDir(), "hvmc")
