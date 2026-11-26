@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,13 +28,15 @@ func pwshStarter(t *testing.T, path string) (Starter, *notifyBuffer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec.LookPath("pwsh"); err != nil {
+	if _, err := pwshCommand(); err != nil {
 		t.Fatalf("pwsh is required for the worker tests on Windows: %v", err)
 	}
 	stderr := &notifyBuffer{changed: make(chan struct{})}
-	encoded := encodedBootstrap()
 	return func(context.Context) (Process, error) {
-		cmd := exec.Command("pwsh", append(append([]string(nil), pwshArgs...), encoded)...)
+		cmd, err := pwshCommand()
+		if err != nil {
+			return nil, err
+		}
 		cmd.Env = append(os.Environ(),
 			"PSModulePath="+mock+string(os.PathListSeparator)+os.Getenv("PSModulePath"),
 			"HVMC_HYPERV_FIXTURE="+path)

@@ -4,19 +4,20 @@ import (
 	"bytes"
 	"context"
 	_ "embed" // worker.ps1
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf16"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -36,9 +37,9 @@ import (
 //	worker → agent   {"id":n,"ok":true,"result":…}
 //	                 {"id":n,"ok":false,"error":{"kind":…,"message":…}}
 //
-// pwsh is started with a short -EncodedCommand bootstrap that reads the
-// script from the first frame and dot-sources it, so no script file is
-// written to disk and the command line stays far below Windows' limit.
+// pwsh is started with a short plain-text -Command bootstrap that reads
+// the script from the first frame and dot-sources it, so no script file is
+// written to disk and the command line stays short.
 //
 // Calls are serialized, each with its own timeout (default 30 s). A worker
 // that does not answer in time is killed and restarted; so is one that
@@ -135,51 +136,83 @@ type Process interface {
 // Starter starts a worker process.
 type Starter func(ctx context.Context) (Process, error)
 
-// pwshArgs are pwsh's arguments before the encoded bootstrap.
-var pwshArgs = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"}
+// pwshArgs are pwsh's arguments; the bootstrap follows -Command.
+var pwshArgs = []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command"}
 
-// bootstrap reads frame 0 (the worker script) from stdin and dot-sources
-// it. It defines what worker.ps1 relies on: $hvmcIn, $hvmcOut and
-// Read-HvmcExact. Console.Out is redirected to stderr so that stray host
-// output cannot corrupt the frames on stdout.
-const bootstrap = `$ErrorActionPreference = 'Stop'
-$hvmcIn = [Console]::OpenStandardInput()
-$hvmcOut = [Console]::OpenStandardOutput()
-[Console]::SetOut([Console]::Error)
-function Read-HvmcExact([int64]$Count) {
-    $buf = [byte[]]::new($Count)
-    $off = 0
-    while ($off -lt $Count) {
-        $n = $hvmcIn.Read($buf, $off, $Count - $off)
-        if ($n -le 0) { exit 0 }
-        $off += $n
-    }
-    return ,$buf
-}
-$hvmcHdr = Read-HvmcExact 4
-$hvmcLen = ([int64]$hvmcHdr[0] -shl 24) -bor ([int64]$hvmcHdr[1] -shl 16) -bor ([int64]$hvmcHdr[2] -shl 8) -bor [int64]$hvmcHdr[3]
-. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString((Read-HvmcExact $hvmcLen))))
-`
+// bootstrap is the plain-text command pwsh starts with. It reads frame 0
+// (the worker script) from stdin and dot-sources it, defining what
+// worker.ps1 relies on: $hvmcIn, $hvmcOut and Read-HvmcExact.
+// Console.Out is redirected to stderr so that stray host output cannot
+// corrupt the frames on stdout.
+//
+// It is deliberately readable text rather than -EncodedCommand: base64
+// encoded PowerShell is a common EDR, AMSI and Defender ASR detection
+// signal, and Hyper-V hosts often run such tools. It is one line without
+// double quotes or backslashes, so Windows command-line quoting passes it
+// through unchanged. Nothing caller-controlled is ever part of PowerShell
+// code: VM names and values travel only as JSON data in frames.
+var bootstrap = strings.Join([]string{
+	"$ErrorActionPreference = 'Stop'",
+	"$hvmcIn = [Console]::OpenStandardInput()",
+	"$hvmcOut = [Console]::OpenStandardOutput()",
+	"[Console]::SetOut([Console]::Error)",
+	"function Read-HvmcExact([int64]$Count) { " +
+		"$buf = [byte[]]::new($Count); $off = 0; " +
+		"while ($off -lt $Count) { $n = $hvmcIn.Read($buf, $off, $Count - $off); if ($n -le 0) { exit 0 }; $off += $n }; " +
+		"return ,$buf }",
+	"$hvmcHdr = Read-HvmcExact 4",
+	"$hvmcLen = ([int64]$hvmcHdr[0] -shl 24) -bor ([int64]$hvmcHdr[1] -shl 16) -bor ([int64]$hvmcHdr[2] -shl 8) -bor [int64]$hvmcHdr[3]",
+	". ([scriptblock]::Create([Text.Encoding]::UTF8.GetString((Read-HvmcExact $hvmcLen))))",
+}, "; ")
 
-// encodedBootstrap is the bootstrap for pwsh -EncodedCommand (base64 of
-// UTF-16LE).
-func encodedBootstrap() string {
-	units := utf16.Encode([]rune(bootstrap))
-	b := make([]byte, 2*len(units))
-	for i, u := range units {
-		binary.LittleEndian.PutUint16(b[2*i:], u)
+// ErrNoPwsh means PowerShell 7 was not found.
+var ErrNoPwsh = errors.New("pwsh (PowerShell 7) not found")
+
+// resolvePwsh returns the absolute path of pwsh: the default installation
+// under %ProgramFiles%\PowerShell\7 on Windows if present, else pwsh from
+// PATH. A relative result (current directory) is refused.
+func resolvePwsh(goos string, getenv func(string) string, exists func(string) bool, lookPath func(string) (string, error)) (string, error) {
+	if goos == "windows" {
+		if pf := getenv("ProgramFiles"); pf != "" {
+			if p := filepath.Join(pf, "PowerShell", "7", "pwsh.exe"); exists(p) {
+				return p, nil
+			}
+		}
 	}
-	return base64.StdEncoding.EncodeToString(b)
+	p, err := lookPath("pwsh")
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrNoPwsh, err)
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("%w: %q is not an absolute path", ErrNoPwsh, p)
+	}
+	return p, nil
 }
 
-// PwshStarter starts `pwsh` from PATH with the bootstrap; the worker's
-// stderr goes to stderr.
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
+}
+
+// pwshCommand returns the worker command: pwsh at an explicit path,
+// started directly (no shell), with fixed arguments.
+func pwshCommand() (*exec.Cmd, error) {
+	path, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
+	if err != nil {
+		return nil, err
+	}
+	// Not CommandContext: the supervisor kills the worker itself.
+	return exec.Command(path, append(append([]string(nil), pwshArgs...), bootstrap)...), nil //nolint:gosec // G204: fixed arguments, path resolved above
+}
+
+// PwshStarter starts pwsh with the bootstrap; the worker's stderr goes to
+// stderr.
 func PwshStarter(stderr io.Writer) Starter {
-	encoded := encodedBootstrap()
 	return func(context.Context) (Process, error) {
-		// Fixed program and arguments. Not CommandContext: the supervisor
-		// kills the worker itself.
-		cmd := exec.Command("pwsh", append(append([]string(nil), pwshArgs...), encoded)...) //nolint:gosec // G204: no input reaches the command line
+		cmd, err := pwshCommand()
+		if err != nil {
+			return nil, err
+		}
 		return StartCommand(cmd, stderr)
 	}
 }

@@ -3,16 +3,15 @@ package host
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf16"
 
 	"google.golang.org/grpc/codes"
 )
@@ -56,24 +55,65 @@ func TestFramingErrors(t *testing.T) {
 	}
 }
 
-func TestEncodedBootstrap(t *testing.T) {
-	raw, err := base64.StdEncoding.DecodeString(encodedBootstrap())
-	if err != nil {
-		t.Fatal(err)
+func TestBootstrap(t *testing.T) {
+	// One plain line without double quotes or backslashes: passes Windows
+	// command-line quoting unchanged and is readable in process listings.
+	for _, bad := range []string{"\"", "\\", "\n", "\r"} {
+		if strings.Contains(bootstrap, bad) {
+			t.Errorf("bootstrap contains %q", bad)
+		}
 	}
-	units := make([]uint16, len(raw)/2)
-	for i := range units {
-		units[i] = binary.LittleEndian.Uint16(raw[2*i:])
+	if len(bootstrap) > 1024 {
+		t.Errorf("bootstrap is %d characters", len(bootstrap))
 	}
-	if got := string(utf16.Decode(units)); got != bootstrap {
-		t.Errorf("decoded bootstrap differs")
-	}
-	// Far below the Windows command-line limit of 32767 characters.
-	if n := len(encodedBootstrap()); n > 8000 {
-		t.Errorf("encoded bootstrap is %d characters", n)
+	if !strings.Contains(bootstrap, "Read-HvmcExact") || pwshArgs[len(pwshArgs)-1] != "-Command" {
+		t.Errorf("bootstrap %q, args %q", bootstrap, pwshArgs)
 	}
 	if !bytes.Contains(workerScript, []byte("Set-VMMemory")) {
 		t.Error("worker.ps1 is not embedded")
+	}
+}
+
+func TestResolvePwsh(t *testing.T) {
+	pf := filepath.Join("C:", "Program Files")
+	def := filepath.Join(pf, "PowerShell", "7", "pwsh.exe")
+	env := func(k string) string {
+		if k == "ProgramFiles" {
+			return pf
+		}
+		return ""
+	}
+	abs, err := filepath.Abs("pwsh-on-path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onPath := func(string) (string, error) { return abs, nil }
+	notOnPath := func(string) (string, error) { return "", errors.New("not found") }
+	relative := func(string) (string, error) { return "pwsh", nil }
+	yes := func(string) bool { return true }
+	no := func(string) bool { return false }
+
+	for _, tc := range []struct {
+		name   string
+		goos   string
+		exists func(string) bool
+		look   func(string) (string, error)
+		want   string
+		err    bool
+	}{
+		{name: "windows default install", goos: "windows", exists: yes, look: notOnPath, want: def},
+		{name: "windows PATH", goos: "windows", exists: no, look: onPath, want: abs},
+		{name: "linux PATH", goos: "linux", exists: yes, look: onPath, want: abs},
+		{name: "missing", goos: "windows", exists: no, look: notOnPath, err: true},
+		{name: "relative", goos: "linux", exists: no, look: relative, err: true},
+	} {
+		got, err := resolvePwsh(tc.goos, env, tc.exists, tc.look)
+		switch {
+		case tc.err && !errors.Is(err, ErrNoPwsh):
+			t.Errorf("%s: %q, %v; want ErrNoPwsh", tc.name, got, err)
+		case !tc.err && (err != nil || got != tc.want):
+			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
+		}
 	}
 }
 
