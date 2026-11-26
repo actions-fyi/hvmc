@@ -81,3 +81,21 @@ func TestAgentUninstallAndStatus(t *testing.T) {
 		t.Errorf("status: exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }
+
+// TestAgentPathsLogsFollowState: on Windows the logs are in the state
+// directory, so --state-dir moves them too (a test never writes to
+// %ProgramData%\hvmc).
+func TestAgentPathsLogsFollowState(t *testing.T) {
+	cmd := newAgentRunCommand()
+	dir := t.TempDir()
+	if err := cmd.Flags().Parse([]string{"--state-dir", dir}); err != nil {
+		t.Fatal(err)
+	}
+	p := agentPaths(cmd)
+	if p.State != dir || (p.Logs != "" && p.Logs != filepath.Join(dir, "logs")) {
+		t.Errorf("paths %+v, want the logs in %s", p, dir)
+	}
+	if want := agent.DefaultPaths(); (want.Logs == "") != (p.Logs == "") {
+		t.Errorf("logs %q, default %q", p.Logs, want.Logs)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -39,6 +40,10 @@ func agentPaths(cmd *cobra.Command) agent.Paths {
 	p := agent.DefaultPaths()
 	p.Config, _ = cmd.Flags().GetString("config")
 	p.State, _ = cmd.Flags().GetString("state-dir")
+	if p.Logs != "" {
+		// The logs live in the state directory (DESIGN §4.5) and move with it.
+		p.Logs = filepath.Join(p.State, "logs")
+	}
 	return p
 }
 
