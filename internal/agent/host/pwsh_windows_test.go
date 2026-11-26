@@ -246,6 +246,7 @@ func TestPwshHang(t *testing.T) {
 	e.clk.Advance(DefaultCallTimeout)
 	wantCode(t, "hung Set-VMMemory", <-done, codes.DeadlineExceeded)
 	<-changed
+	skipPause(t, sup, e.clk)
 	e.waitWorker()
 	if v := e.vm("windows-node-1"); v.GetAssignedBytes() != 8*gib {
 		t.Errorf("after the restart: %v", v)

@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -78,16 +80,73 @@ func TestPwshStarterWithoutPwsh(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("ProgramFiles", t.TempDir())
 	start := PwshStarter(io.Discard)
-	if _, err := start(context.Background()); !errors.Is(err, ErrNoPwsh) {
-		t.Errorf("start without pwsh: %v, want ErrNoPwsh", err)
+	if _, err := start(context.Background()); !errors.Is(err, ErrNoPwsh) || !strings.Contains(err.Error(), "PowerShell 7") {
+		t.Errorf("start without pwsh: %v, want ErrNoPwsh naming PowerShell 7", err)
 	}
-	// The supervisor gives up and the worker check names the cause.
-	sup := NewSupervisor(SupervisorOptions{Start: start, Clock: newTestClock(), Log: testLogger(t)})
-	if err := sup.Run(context.Background()); !errors.Is(err, ErrWorkerFailing) {
-		t.Fatalf("Run = %v, want ErrWorkerFailing", err)
+}
+
+// TestSupervisorMissingPwsh: a missing pwsh keeps the supervisor running and
+// unready, is looked for again every PwshRetryInterval, is logged once, and
+// recovers without a restart once pwsh appears.
+func TestSupervisorMissingPwsh(t *testing.T) {
+	h := newFakeHost(loadFixture(t, "host"))
+	var (
+		mu      sync.Mutex
+		missing = true
+		tries   int
+	)
+	fake := h.starter(false)
+	start := func(ctx context.Context) (Process, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		tries++
+		if missing {
+			return nil, fmt.Errorf("%w (looked in PATH): not found", ErrNoPwsh)
+		}
+		return fake(ctx)
 	}
-	if err := sup.Check(context.Background()); !errors.Is(err, ErrNoPwsh) || !strings.Contains(err.Error(), "PowerShell 7") {
-		t.Errorf("worker check = %v, want it to name the missing PowerShell 7", err)
+	var logs syncBuffer
+	clk := newTestClock()
+	sup := NewSupervisor(SupervisorOptions{Start: start, Clock: clk, Log: slogTo(&logs)})
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- sup.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-runErr; err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
+
+	for range MaxWorkerExits + 2 { // more retries than the exit budget
+		if d := skipPause(t, sup, clk); d != PwshRetryInterval {
+			t.Fatalf("retry pause %s, want %s", d, PwshRetryInterval)
+		}
+		if err := sup.Check(context.Background()); !errors.Is(err, ErrNoPwsh) || !strings.Contains(err.Error(), "looked in") {
+			t.Errorf("worker check = %v, want the missing PowerShell 7 and where it looked", err)
+		}
+	}
+	select {
+	case err := <-runErr:
+		t.Fatalf("Run returned %v while pwsh was missing", err)
+	default:
+	}
+	wantCode(t, "call without pwsh", sup.Call(testCtx(t), opHost, nil, nil), codes.Unavailable)
+
+	mu.Lock()
+	missing = false
+	mu.Unlock()
+	skipPause(t, sup, clk)
+	waitFor(t, "worker up", sup.Changed, func() bool { return sup.Check(context.Background()) == nil })
+	if err := sup.Call(testCtx(t), opHost, nil, nil); err != nil {
+		t.Errorf("after pwsh appeared: %v", err)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "PowerShell 7 not found"); n != 1 {
+		t.Errorf("missing pwsh logged %d times, want once:\n%s", n, out)
+	}
+	if n := strings.Count(out, "PowerShell 7 found"); n != 1 {
+		t.Errorf("recovery logged %d times, want once:\n%s", n, out)
 	}
 }
 
@@ -263,6 +322,9 @@ func TestSupervisorTimeoutKillsAndRestarts(t *testing.T) {
 	e.clk.Advance(DefaultCallTimeout)
 	wantCode(t, "hung call", <-done, codes.DeadlineExceeded)
 	<-changed // the killed worker is gone
+	if d := skipPause(t, e.sup, e.clk); d != InitialRestartBackoff {
+		t.Errorf("restart pause %s, want %s", d, InitialRestartBackoff)
+	}
 	e.waitUp()
 	if _, err := e.vms(testCtx(t)); err != nil {
 		t.Errorf("after the restart: %v", err)
@@ -296,6 +358,7 @@ func TestSupervisorCallerGivesUp(t *testing.T) {
 	if err := <-next; err != nil {
 		wantCode(t, "call after a timeout", err, codes.Unavailable)
 	}
+	skipPause(t, e.sup, e.clk)
 	e.waitUp()
 	if _, err := e.vms(testCtx(t)); err != nil {
 		t.Errorf("after the restart: %v", err)
@@ -311,6 +374,7 @@ func TestSupervisorWorkerCrashDuringCall(t *testing.T) {
 	err := e.sup.Call(testCtx(t), opHost, nil, nil)
 	wantCode(t, "crash", err, codes.Unavailable)
 	h.set(func(*fixture) { delete(h.crashOn, opHost) })
+	skipPause(t, e.sup, e.clk)
 	e.waitNew(old)
 	if err := e.sup.Call(testCtx(t), opHost, nil, nil); err != nil {
 		t.Errorf("after the restart: %v", err)
@@ -321,6 +385,17 @@ func TestSupervisorGivesUpAfterFiveExitsInFiveMinutes(t *testing.T) {
 	h := newFakeHost(loadFixture(t, "host"))
 	h.failNext = MaxWorkerExits
 	e := newSupEnv(t, h, nil)
+	// The restart pause doubles after every exit; the fifth exit gives up
+	// without one.
+	for i := range MaxWorkerExits - 1 {
+		want := InitialRestartBackoff << i
+		if d := skipPause(t, e.sup, e.clk); d != want {
+			t.Errorf("pause %d: %s, want %s", i+1, d, want)
+		}
+		if err := e.sup.Check(context.Background()); err == nil {
+			t.Errorf("worker check passes while restarting")
+		}
+	}
 	err := <-e.runErr
 	e.runErr <- nil // for the cleanup
 	if !errors.Is(err, ErrWorkerFailing) {
@@ -344,6 +419,7 @@ func TestSupervisorExitsSpreadOverTimeDoNotGiveUp(t *testing.T) {
 	for i := range 2 * MaxWorkerExits {
 		old := e.worker()
 		wantCode(t, "crash", e.sup.Call(testCtx(t), opHost, nil, nil), codes.Unavailable)
+		skipPause(t, e.sup, e.clk)
 		e.waitNew(old) // the exit is recorded before the next worker starts
 		if i%2 == 1 {
 			e.clk.Advance(WorkerExitWindow/2 + time.Second)
@@ -360,6 +436,8 @@ func TestSupervisorFailedStartCounts(t *testing.T) {
 	h := newFakeHost(loadFixture(t, "host"))
 	h.failNext = 2
 	e := newSupEnv(t, h, nil)
+	skipPause(t, e.sup, e.clk)
+	skipPause(t, e.sup, e.clk)
 	e.waitUp()
 	if h.startCount() != 3 {
 		t.Errorf("%d starts, want 3", h.startCount())
@@ -378,12 +456,75 @@ func TestSupervisorWorkerNotReadingStdin(t *testing.T) {
 	<-h.hung
 	e.clk.waitTimer(t) // the hello timer runs although the script write blocks
 	e.clk.Advance(DefaultCallTimeout)
+	skipPause(t, e.sup, e.clk)
 	e.waitUp() // killed, counted and restarted
 	if e.exitCount() != 1 || h.startCount() != 1 {
 		t.Errorf("exits %d, started workers %d; want 1, 1", e.exitCount(), h.startCount())
 	}
 	if _, err := e.vms(testCtx(t)); err != nil {
 		t.Errorf("after the restart: %v", err)
+	}
+}
+
+func TestSupervisorBackoffResetsAfterHealthyUptime(t *testing.T) {
+	h := newFakeHost(loadFixture(t, "host"))
+	h.crashOn[opHost] = true
+	e := newSupEnv(t, h, nil)
+	e.waitUp()
+	crash := func() time.Duration {
+		t.Helper()
+		old := e.worker()
+		wantCode(t, "crash", e.sup.Call(testCtx(t), opHost, nil, nil), codes.Unavailable)
+		d := skipPause(t, e.sup, e.clk)
+		e.waitNew(old)
+		return d
+	}
+	var got []time.Duration
+	got = append(got, crash(), crash(), crash())
+	e.clk.Advance(BackoffResetAfter) // the current worker runs long enough
+	got = append(got, crash())
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, time.Second}
+	if !slices.Equal(got, want) {
+		t.Errorf("restart pauses %v, want %v", got, want)
+	}
+}
+
+func TestNextBackoff(t *testing.T) {
+	var got []time.Duration
+	for d := InitialRestartBackoff; len(got) < 8; d = nextBackoff(d) {
+		got = append(got, d)
+	}
+	want := []time.Duration{1, 2, 4, 8, 16, 30, 30, 30}
+	for i := range want {
+		want[i] *= time.Second
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("backoff sequence %v, want %v", got, want)
+	}
+}
+
+// TestSupervisorGivesUpOnCrashingWorkers: workers that start and then
+// crash still hit the 5-in-5 rule despite the backoff.
+func TestSupervisorGivesUpOnCrashingWorkers(t *testing.T) {
+	h := newFakeHost(loadFixture(t, "host"))
+	h.crashOn[opHost] = true
+	e := newSupEnv(t, h, nil)
+	for i := range MaxWorkerExits {
+		e.waitUp()
+		old := e.worker()
+		wantCode(t, "crash", e.sup.Call(testCtx(t), opHost, nil, nil), codes.Unavailable)
+		if i < MaxWorkerExits-1 {
+			skipPause(t, e.sup, e.clk)
+			e.waitNew(old)
+		}
+	}
+	err := <-e.runErr
+	e.runErr <- nil
+	if !errors.Is(err, ErrWorkerFailing) {
+		t.Fatalf("Run = %v, want ErrWorkerFailing", err)
+	}
+	if err := e.sup.Check(context.Background()); !errors.Is(err, ErrWorkerFailing) {
+		t.Errorf("worker check = %v", err)
 	}
 }
 

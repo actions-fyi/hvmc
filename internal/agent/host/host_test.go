@@ -320,15 +320,17 @@ func TestRegisterNeedsPolicyStore(t *testing.T) {
 
 func TestRunFailsWhenTheWorkerKeepsFailing(t *testing.T) {
 	h := newFakeHost(loadFixture(t, "host"))
-	h.failNext = 1 // the first worker fails to start, the second works
 	e := newTestEnv(t, h, testPolicy())
-	// Crash the running worker; the next starts all fail: five exits.
+	// Crash the running worker; the next four starts fail: five exits.
 	h.set(func(*fixture) {
-		h.failNext = MaxWorkerExits
+		h.failNext = MaxWorkerExits - 1
 		h.crashOn[opHost] = true
 	})
 	_, err := e.client.GetHost(testCtx(t), &agentv1.GetHostRequest{})
 	wantCode(t, "crash", err, codes.Unavailable)
+	for range MaxWorkerExits - 1 {
+		skipPause(t, e.svc.srv.sup, e.clk)
+	}
 	select {
 	case err := <-e.runErr:
 		if !errors.Is(err, ErrWorkerFailing) {
