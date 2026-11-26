@@ -1,6 +1,6 @@
-name: Check Workflow Data Flow
+name: Audit
 # Checks pushes to main, where a failed check opens an issue. Pull requests and merge groups are
-# covered by the org ruleset workflow of the same name of actions-fyi/ruleset-workflows.
+# covered by the org ruleset workflow Audit Workflow Data Flow of actions-fyi/ruleset-workflows.
 on:
   push:
     branches: [main]

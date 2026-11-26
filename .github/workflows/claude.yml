@@ -14,6 +14,8 @@ permissions: {}
 jobs:
   claude:
     name: Claude
+    # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
+    if: github.repository_owner == 'actions-fyi'
     cache-mode: none
     # The union of what the jobs of _claude.yml declare; a called job can't get more.
     permissions:

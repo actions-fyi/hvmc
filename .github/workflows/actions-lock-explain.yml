@@ -1,9 +1,12 @@
 name: Explain Actions Lockfile
-# "Check Actions Lockfile" is the org ruleset workflow on pull requests, and actions-lock-push.yml on
-# main; this listener reports their failures and resolves the reports when they pass.
+# "Validate Actions Lockfile" is the org ruleset workflow on pull requests, and
+# actions-lock-push.yml on main; this listener reports their failures and resolves the reports when
+# they pass.
+# "Check Actions Lockfile" is the old name. It stays until the org ruleset workflow of
+# actions-fyi/ruleset-workflows is renamed; after that it can be removed.
 on:
   workflow_run:
-    workflows: ["Check Actions Lockfile"]
+    workflows: ["Validate Actions Lockfile"]
     types: [completed]
 
 permissions: {}
@@ -11,6 +14,9 @@ permissions: {}
 jobs:
   explain:
     name: Explain
+    # Not in a fork: Claude needs the org's secrets, and a failure on main would open an issue in
+    # the fork.
+    if: github.repository_owner == 'actions-fyi'
     cache-mode: none
     permissions:
       actions: read # Read the run's jobs and download their logs

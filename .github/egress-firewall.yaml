@@ -12,38 +12,39 @@
 # - secrets.actions.fyi and promptguard.actions.fyi, OpenBao and TEI: only the Prompt Guard job
 #   reaches them, and it can't run on the firewall runner yet (actions-native-egress-firewall#39).
 #
-# mode: log records every request and blocks none. Switch to enforce once a round of runs shows no
-# request outside the list in their firewall-decisions artifacts.
+# mode: log records every request and blocks none. A repository opts in to enforce with its custom
+# property firewall: where it is true, the sync of actions-fyi/sync-workflows writes mode: enforce
+# into the repository's copy. Set it once a round of the repository's runs shows no request outside
+# the list in their firewall-decisions artifacts. This repository's own copy is the source and
+# isn't synced, so the property doesn't change it, nor actions-fyi/shared-workflows', which keeps
+# its own.
 mode: log
 allow:
   # GitHub, beyond the defaults
-  - api.github.com                       # REST and GraphQL API: gh, github-script, the actions
-  - uploads.github.com                   # CodeQL's SARIF upload
+  - api.github.com # REST and GraphQL API: gh, github-script, the actions
+  - uploads.github.com # CodeQL's SARIF upload
   - release-assets.githubusercontent.com # release downloads: bun, node, gh extensions, re2
-  - ghcr.io                              # actionlint's container image
+  - ghcr.io # actionlint's container image
   - pkg-containers.githubusercontent.com # ghcr.io's blobs
   # Package registries
-  - registry.npmjs.org     # renovate-config-validator, Wrangler, and Claude Code through bun
-  - pypi.org               # zizmor's install
+  - registry.npmjs.org # renovate-config-validator, Wrangler, and Claude Code through bun
+  - pypi.org # zizmor's install
   - files.pythonhosted.org # zizmor's install
   # Claude: the review, triage, metadata, explain and screen jobs
-  - claude.ai           # Claude Code's installer
+  - claude.ai # Claude Code's installer
   - downloads.claude.ai # Claude Code's binary
-  - api.anthropic.com   # the model
+  - api.anthropic.com # the model
   # apt: claude-code-action installs bubblewrap and socat
   - azure.archive.ubuntu.com # Ubuntu's mirror, over plain HTTP
-  - packages.microsoft.com   # the runner image's Microsoft apt source
-  - esm.ubuntu.com           # the runner image's Ubuntu Pro apt source
-  - motd.ubuntu.com          # the runner image's apt hooks
+  - packages.microsoft.com # the runner image's Microsoft apt source
+  - esm.ubuntu.com # the runner image's Ubuntu Pro apt source
+  - motd.ubuntu.com # the runner image's apt hooks
   # Octo STS: the CodeQL results, flowpact commit, lockfile fix and sync jobs' tokens
   - octo-sts.dev # token exchange
   # Sigstore: gh attestation verify of the flowpact CLI
-  - tuf-repo-cdn.sigstore.dev           # TUF trust root
-  - tuf-repo.github.com                 # GitHub's TUF trust root
+  - tuf-repo-cdn.sigstore.dev # TUF trust root
+  - tuf-repo.github.com # GitHub's TUF trust root
   - tmaproduction.blob.core.windows.net # GitHub's TUF trust root storage
-  # Go and the Kubernetes test tooling: ci.yaml, and CodeQL's go analysis
-  - proxy.golang.org          # Go modules
-  - sum.golang.org            # Go checksum database
-  - storage.googleapis.com    # setup-envtest's binaries, and gcr.io's image layers
-  - raw.githubusercontent.com # setup-envtest's release index
-  - gcr.io                    # ko's base image
+  # DeepSource: _coverage.yml's report job, where coverage-providers names deepsource
+  - cli.deepsource.com # the CLI's download
+  - app.deepsource.com # the CLI's API: the OIDC exchange and the report
