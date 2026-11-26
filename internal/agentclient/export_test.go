@@ -16,3 +16,14 @@ func TrackedForTest(t *Tracker, agent string) *Tracked {
 func RecordCheckForTest(t *Tracker, a *Tracked, err error) {
 	t.recordCheck(a, a.ep, HealthUnknown, err)
 }
+
+// ObserveGuestForTest records a guest reading on a, as a GetMemory or
+// WatchMemory result does.
+func ObserveGuestForTest(t *Tracker, a *Tracked, m GuestMemory) { t.observeGuest(a, a.ep, m) }
+
+// ObserveHostForTest records host data and the VM list on a, as GetHost
+// and ListVMs results do.
+func ObserveHostForTest(t *Tracker, a *Tracked, info HostInfo, vms []VMInfo) {
+	t.observeHost(a, info)
+	t.observeVMs(a, vmsObservation(vms), vms)
+}

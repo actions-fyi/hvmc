@@ -549,7 +549,7 @@ func (t *Tracker) pollHost(ctx context.Context, a *tracked, ep Endpoint) {
 		t.syncPolicy(ctx, a, h, info)
 	}
 	if vms, err := h.ListVMs(ctx); err == nil {
-		t.observeVMs(vmsObservation(vms), vms)
+		t.observeVMs(a, vmsObservation(vms), vms)
 	}
 }
 
@@ -596,7 +596,7 @@ func (t *Tracker) dataWatch(ctx context.Context, a *tracked) {
 			return
 		}
 		for snap := range ch {
-			t.observeVMs(snap.Observation(), snap.VMs)
+			t.observeVMs(a, snap.Observation(), snap.VMs)
 		}
 		return
 	}
@@ -613,25 +613,36 @@ func (t *Tracker) dataWatch(ctx context.Context, a *tracked) {
 	}
 }
 
-func (t *Tracker) observe(o ledger.Observation) {
+// observeLocked passes o to the ledger. Callers hold t.mu and have checked
+// trackedLocked, so a reading in flight when its agent was removed cannot
+// undo what removeLocked reset (t.mu is taken before the ledger's lock, as
+// in removeLocked and evaluateLocked).
+func (t *Tracker) observeLocked(o ledger.Observation) {
 	if t.opts.Ledger != nil {
 		t.opts.Ledger.Observe(o)
 	}
 }
 
 func (t *Tracker) observeHost(a *tracked, info HostInfo) {
-	t.observe(ledger.Observation{Host: info.Observation()})
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.trackedLocked(a) {
+		return
+	}
+	t.observeLocked(ledger.Observation{Host: info.Observation()})
 	a.dataAt = later(a.dataAt, info.ObservedAt)
 	t.seenLocked(a, info.Agent.Version)
 	t.evaluateLocked(a)
 }
 
-func (t *Tracker) observeVMs(o ledger.Observation, vms []VMInfo) {
-	t.observe(o)
+// observeVMs records the VM list reported by the host agent a.
+func (t *Tracker) observeVMs(a *tracked, o ledger.Observation, vms []VMInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.trackedLocked(a) {
+		return
+	}
+	t.observeLocked(o)
 	t.vms = make(map[string]VMInfo, len(vms))
 	for _, v := range vms {
 		t.vms[v.Name] = v
@@ -642,9 +653,12 @@ func (t *Tracker) observeVMs(o ledger.Observation, vms []VMInfo) {
 }
 
 func (t *Tracker) observeGuest(a *tracked, ep Endpoint, m GuestMemory) {
-	t.observe(ledger.Observation{Guest: m.Observation(ep.VM)})
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.trackedLocked(a) {
+		return
+	}
+	t.observeLocked(ledger.Observation{Guest: m.Observation(ep.VM)})
 	a.dataAt = later(a.dataAt, m.ObservedAt)
 	if !m.ObservedAt.Before(a.guestAt) {
 		a.guestTotal, a.guestAt = m.Total, m.ObservedAt

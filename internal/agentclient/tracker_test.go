@@ -283,6 +283,34 @@ func TestRemovedAgentIgnoresInFlightResults(t *testing.T) {
 	}
 }
 
+// Readings that were in flight when their agent was removed must not reach
+// the ledger, which removeLocked has already reset for that agent.
+func TestRemovedAgentReadingsDoNotReachLedger(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	tr.Poll(e.ctx)
+	guest := agentclient.TrackedForTest(tr, "vm-a")
+	host := agentclient.TrackedForTest(tr, "host")
+	before := e.led.Snapshot()
+	usedBefore := e.vmA().Used
+	e.hc.Spec.VMs, e.hc.Spec.Agents = nil, nil
+	must(t, tr.Configure(e.ctx, e.hc))
+
+	e.clk.Advance(time.Second)
+	agentclient.ObserveGuestForTest(tr, guest, agentclient.GuestMemory{
+		Total: 8 * gib, Available: gib, ObservedAt: e.clk.Now(),
+	})
+	agentclient.ObserveHostForTest(tr, host, agentclient.HostInfo{
+		Name: "host", Total: 64 * gib, Free: 10 * gib, ObservedAt: e.clk.Now(),
+	}, nil)
+	if used := e.vmA().Used; used != usedBefore {
+		t.Errorf("used of vm-a = %d after a late reading, want %d", used, usedBefore)
+	}
+	if free := e.led.Snapshot().HostFree; free != before.HostFree {
+		t.Errorf("host free = %d after a late reading, want %d", free, before.HostFree)
+	}
+}
+
 // Acceptance: a policy mismatch sends the proposal exactly once per digest.
 func TestPolicyProposedOncePerDigest(t *testing.T) {
 	e := newEnv(t)
