@@ -549,7 +549,7 @@ func (t *Tracker) pollHost(ctx context.Context, a *tracked, ep Endpoint) {
 		t.syncPolicy(ctx, a, h, info)
 	}
 	if vms, err := h.ListVMs(ctx); err == nil {
-		t.observeVMs(a, vmsObservation(vms), vms)
+		t.observeVMs(a, vms)
 	}
 }
 
@@ -596,7 +596,7 @@ func (t *Tracker) dataWatch(ctx context.Context, a *tracked) {
 			return
 		}
 		for snap := range ch {
-			t.observeVMs(a, snap.Observation(), snap.VMs)
+			t.observeVMs(a, snap.VMs)
 		}
 		return
 	}
@@ -623,26 +623,44 @@ func (t *Tracker) observeLocked(o ledger.Observation) {
 	}
 }
 
+// receivedLocked caps an agent-reported observation time at the
+// coordinator's clock. Freshness compares observation times with that
+// clock (DESIGN §4.4), so an agent whose clock runs ahead would otherwise
+// never turn stale: one future-dated reading would stay the newest.
+// Agents whose clock runs behind by more than staleAfter still turn stale;
+// agents need synchronized clocks.
+func (t *Tracker) receivedLocked(at time.Time) time.Time {
+	if now := t.opts.Clock.Now(); at.After(now) {
+		return now
+	}
+	return at
+}
+
 func (t *Tracker) observeHost(a *tracked, info HostInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.trackedLocked(a) {
 		return
 	}
+	info.ObservedAt = t.receivedLocked(info.ObservedAt)
 	t.observeLocked(ledger.Observation{Host: info.Observation()})
 	a.dataAt = later(a.dataAt, info.ObservedAt)
 	t.seenLocked(a, info.Agent.Version)
 	t.evaluateLocked(a)
 }
 
-// observeVMs records the VM list reported by the host agent a.
-func (t *Tracker) observeVMs(a *tracked, o ledger.Observation, vms []VMInfo) {
+// observeVMs records the complete VM list reported by the host agent a.
+func (t *Tracker) observeVMs(a *tracked, vms []VMInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.trackedLocked(a) {
 		return
 	}
-	t.observeLocked(o)
+	vms = slices.Clone(vms)
+	for i := range vms {
+		vms[i].ObservedAt = t.receivedLocked(vms[i].ObservedAt)
+	}
+	t.observeLocked(vmsObservation(vms))
 	t.vms = make(map[string]VMInfo, len(vms))
 	for _, v := range vms {
 		t.vms[v.Name] = v
@@ -658,6 +676,7 @@ func (t *Tracker) observeGuest(a *tracked, ep Endpoint, m GuestMemory) {
 	if !t.trackedLocked(a) {
 		return
 	}
+	m.ObservedAt = t.receivedLocked(m.ObservedAt)
 	t.observeLocked(ledger.Observation{Guest: m.Observation(ep.VM)})
 	a.dataAt = later(a.dataAt, m.ObservedAt)
 	if !m.ObservedAt.Before(a.guestAt) {

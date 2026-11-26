@@ -12,9 +12,13 @@ func TrackedForTest(t *Tracker, agent string) *Tracked {
 }
 
 // RecordCheckForTest records a health check result on a, as pollAgent
-// does when the check returns.
+// does when the check returns: Serving without err.
 func RecordCheckForTest(t *Tracker, a *Tracked, err error) {
-	t.recordCheck(a, a.ep, HealthUnknown, err)
+	st := HealthServing
+	if err != nil {
+		st = HealthUnknown
+	}
+	t.recordCheck(a, a.ep, st, err)
 }
 
 // ObserveGuestForTest records a guest reading on a, as a GetMemory or
@@ -25,5 +29,5 @@ func ObserveGuestForTest(t *Tracker, a *Tracked, m GuestMemory) { t.observeGuest
 // and ListVMs results do.
 func ObserveHostForTest(t *Tracker, a *Tracked, info HostInfo, vms []VMInfo) {
 	t.observeHost(a, info)
-	t.observeVMs(a, vmsObservation(vms), vms)
+	t.observeVMs(a, vms)
 }

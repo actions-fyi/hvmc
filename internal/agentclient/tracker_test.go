@@ -311,6 +311,28 @@ func TestRemovedAgentReadingsDoNotReachLedger(t *testing.T) {
 	}
 }
 
+// A reading an agent dates in the future (its clock is ahead) counts as
+// observed when the coordinator received it, so the agent still turns
+// stale once no newer data arrives.
+func TestFutureTimestampsAreClampedToReceiveTime(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker()
+	tr.Poll(e.ctx)
+	e.wantState(tr, "vm-a", ledger.AgentReady)
+	guest := agentclient.TrackedForTest(tr, "vm-a")
+	agentclient.ObserveGuestForTest(tr, guest, agentclient.GuestMemory{
+		Total: 8 * gib, Available: 5 * gib, ObservedAt: e.clk.Now().Add(time.Hour),
+	})
+	e.clk.Advance(ledger.DefaultStaleAfter + time.Second)
+	agentclient.RecordCheckForTest(tr, guest, nil)
+	if st, _ := tr.Status("vm-a"); st.State != ledger.AgentDegraded || st.Reason != agentclient.StateReasonDataStale {
+		t.Errorf("vm-a = %s/%s after staleAfter with a future-dated reading, want Degraded/%s", st.State, st.Reason, agentclient.StateReasonDataStale)
+	}
+	if vm := e.vmA(); vm.UsedKnown {
+		t.Errorf("ledger still uses vm-a's future-dated reading: %+v", vm)
+	}
+}
+
 // Acceptance: a policy mismatch sends the proposal exactly once per digest.
 func TestPolicyProposedOncePerDigest(t *testing.T) {
 	e := newEnv(t)

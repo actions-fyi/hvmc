@@ -275,7 +275,7 @@ rpc WatchMemory(WatchMemoryRequest) returns (stream GuestMemory);  // every 5 s 
 
 Grow verification after `SetStartup`: on first contact the coordinator records `offset(vm) = assigned − guest total` (firmware/kernel reservations). Verified when `guest total ≥ new assigned − offset − step/2`. (Only Windows VMs are ever resized, so there is no Linux hot-add onlining to check.) Timeout 60 s (configurable); on timeout the lease fails and the reservation rolls back; the memory stays assigned and is reused or shrunk later.
 
-Data freshness: every value carries `observed_at`; values older than `staleAfter` (default 30 s) are treated as missing.
+Data freshness: every value carries `observed_at`; values older than `staleAfter` (default 30 s) are treated as missing. Freshness compares `observed_at` with the coordinator's clock, so agents and coordinator need synchronized clocks (NTP), with a skew well under `staleAfter`: an agent whose clock runs behind by more than that is always stale. An `observed_at` later than the coordinator's clock is taken as the time the coordinator received the value, so an agent whose clock runs ahead still turns stale once no newer data arrives.
 
 ### 4.5 Service entry on the machine (self-installing)
 
