@@ -81,6 +81,14 @@ func TestPwshStarterWithoutPwsh(t *testing.T) {
 	if _, err := start(context.Background()); !errors.Is(err, ErrNoPwsh) {
 		t.Errorf("start without pwsh: %v, want ErrNoPwsh", err)
 	}
+	// The supervisor gives up and the worker check names the cause.
+	sup := NewSupervisor(SupervisorOptions{Start: start, Clock: newTestClock(), Log: testLogger(t)})
+	if err := sup.Run(context.Background()); !errors.Is(err, ErrWorkerFailing) {
+		t.Fatalf("Run = %v, want ErrWorkerFailing", err)
+	}
+	if err := sup.Check(context.Background()); !errors.Is(err, ErrNoPwsh) || !strings.Contains(err.Error(), "PowerShell 7") {
+		t.Errorf("worker check = %v, want it to name the missing PowerShell 7", err)
+	}
 }
 
 func TestResolvePwsh(t *testing.T) {
@@ -120,6 +128,8 @@ func TestResolvePwsh(t *testing.T) {
 		switch {
 		case tc.err && !errors.Is(err, ErrNoPwsh):
 			t.Errorf("%s: %q, %v; want ErrNoPwsh", tc.name, got, err)
+		case tc.err && !strings.Contains(err.Error(), "PowerShell 7") || tc.err && !strings.Contains(err.Error(), "looked in"):
+			t.Errorf("%s: message %q does not say what is required and where it looked", tc.name, err)
 		case !tc.err && (err != nil || got != tc.want):
 			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
 		}

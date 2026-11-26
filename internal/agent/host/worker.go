@@ -165,26 +165,30 @@ var bootstrap = strings.Join([]string{
 	". ([scriptblock]::Create([Text.Encoding]::UTF8.GetString((Read-HvmcExact $hvmcLen))))",
 }, "; ")
 
-// ErrNoPwsh means PowerShell 7 was not found.
-var ErrNoPwsh = errors.New("pwsh (PowerShell 7) not found")
+// ErrNoPwsh means PowerShell 7 was not found. The host agent requires
+// PowerShell 7 and never falls back to Windows PowerShell 5.1.
+var ErrNoPwsh = errors.New("the host agent requires PowerShell 7 (pwsh), which was not found; Windows PowerShell 5.1 is not supported")
 
 // resolvePwsh returns the absolute path of pwsh: the default installation
 // under %ProgramFiles%\PowerShell\7 on Windows if present, else pwsh from
 // PATH. A relative result (current directory) is refused.
 func resolvePwsh(goos string, getenv func(string) string, exists func(string) bool, lookPath func(string) (string, error)) (string, error) {
+	where := "PATH"
 	if goos == "windows" {
 		if pf := getenv("ProgramFiles"); pf != "" {
-			if p := filepath.Join(pf, "PowerShell", "7", "pwsh.exe"); exists(p) {
+			p := filepath.Join(pf, "PowerShell", "7", "pwsh.exe")
+			if exists(p) {
 				return p, nil
 			}
+			where = p + " and PATH"
 		}
 	}
 	p, err := lookPath("pwsh")
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrNoPwsh, err)
+		return "", fmt.Errorf("%w (looked in %s): %w", ErrNoPwsh, where, err)
 	}
 	if !filepath.IsAbs(p) {
-		return "", fmt.Errorf("%w: %q is not an absolute path", ErrNoPwsh, p)
+		return "", fmt.Errorf("%w (looked in %s): %q on PATH is not an absolute path", ErrNoPwsh, where, p)
 	}
 	return p, nil
 }
