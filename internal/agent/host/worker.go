@@ -194,26 +194,24 @@ func fileExists(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
-// pwshCommand returns the worker command: pwsh at an explicit path,
-// started directly (no shell), with fixed arguments.
-func pwshCommand() (*exec.Cmd, error) {
-	path, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
-	if err != nil {
-		return nil, err
-	}
+// pwshCommand returns the worker command for pwsh at path: started
+// directly (no shell), with fixed arguments.
+func pwshCommand(path string) *exec.Cmd {
 	// Not CommandContext: the supervisor kills the worker itself.
-	return exec.Command(path, append(append([]string(nil), pwshArgs...), bootstrap)...), nil //nolint:gosec // G204: fixed arguments, path resolved above
+	return exec.Command(path, append(append([]string(nil), pwshArgs...), bootstrap)...) //nolint:gosec // G204: fixed arguments; path resolved once by resolvePwsh
 }
 
-// PwshStarter starts pwsh with the bootstrap; the worker's stderr goes to
-// stderr.
+// PwshStarter resolves pwsh to an absolute path once and returns a Starter
+// that starts it with the bootstrap; the worker's stderr goes to stderr.
+// Without pwsh every start fails with ErrNoPwsh, so the supervisor gives
+// up and the worker readiness check reports it.
 func PwshStarter(stderr io.Writer) Starter {
+	path, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
 	return func(context.Context) (Process, error) {
-		cmd, err := pwshCommand()
 		if err != nil {
 			return nil, err
 		}
-		return StartCommand(cmd, stderr)
+		return StartCommand(pwshCommand(path), stderr)
 	}
 }
 

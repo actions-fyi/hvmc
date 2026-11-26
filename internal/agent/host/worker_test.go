@@ -74,6 +74,15 @@ func TestBootstrap(t *testing.T) {
 	}
 }
 
+func TestPwshStarterWithoutPwsh(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("ProgramFiles", t.TempDir())
+	start := PwshStarter(io.Discard)
+	if _, err := start(context.Background()); !errors.Is(err, ErrNoPwsh) {
+		t.Errorf("start without pwsh: %v, want ErrNoPwsh", err)
+	}
+}
+
 func TestResolvePwsh(t *testing.T) {
 	pf := filepath.Join("C:", "Program Files")
 	def := filepath.Join(pf, "PowerShell", "7", "pwsh.exe")
