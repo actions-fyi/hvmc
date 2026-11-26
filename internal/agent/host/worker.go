@@ -43,10 +43,14 @@ import (
 //
 // Calls are serialized, each with its own timeout (default 30 s). A worker
 // that does not answer in time is killed and restarted; so is one that
-// exits or breaks the framing. After MaxWorkerExits exits within
-// WorkerExitWindow the supervisor gives up: the readiness check "worker"
-// fails and Run returns ErrWorkerFailing, which stops the agent with a
-// non-zero exit so the service manager's recovery restarts it (§4.8).
+// exits or breaks the framing. Restarts back off on the clock: 1 s,
+// doubling up to 30 s, back to 1 s once a worker ran for a minute; the
+// readiness check "worker" fails meanwhile. After MaxWorkerExits exits
+// within WorkerExitWindow the supervisor gives up: Run returns
+// ErrWorkerFailing, which stops the agent with a non-zero exit so the
+// service manager's recovery restarts it (§4.8). A missing pwsh is not an
+// exit: the agent stays up and unready, and pwsh is looked for again every
+// minute.
 
 //go:embed worker.ps1
 var workerScript []byte
@@ -60,6 +64,17 @@ const (
 	MaxWorkerExits = 5
 	// WorkerExitWindow is the window MaxWorkerExits counts in.
 	WorkerExitWindow = 5 * time.Minute
+	// InitialRestartBackoff is the pause before restarting a worker that
+	// ended; it doubles with every further exit up to MaxRestartBackoff.
+	InitialRestartBackoff = time.Second
+	// MaxRestartBackoff caps the restart pause.
+	MaxRestartBackoff = 30 * time.Second
+	// BackoffResetAfter is how long a worker must have run for the next
+	// restart pause to start again at InitialRestartBackoff.
+	BackoffResetAfter = time.Minute
+	// PwshRetryInterval is how often pwsh is looked for again while it is
+	// missing (ErrNoPwsh).
+	PwshRetryInterval = time.Minute
 	// maxFrame bounds one frame; a longer length prefix is a protocol
 	// error (for example stray text on the worker's stdout).
 	maxFrame = 16 << 20
@@ -202,20 +217,33 @@ func fileExists(p string) bool {
 // directly (no shell), with fixed arguments.
 func pwshCommand(path string) *exec.Cmd {
 	// Not CommandContext: the supervisor kills the worker itself.
-	return exec.Command(path, append(append([]string(nil), pwshArgs...), bootstrap)...) //nolint:gosec // G204: fixed arguments; path resolved once by resolvePwsh
+	return exec.Command(path, append(append([]string(nil), pwshArgs...), bootstrap)...) //nolint:gosec // G204: fixed arguments; path from resolvePwsh
 }
 
-// PwshStarter resolves pwsh to an absolute path once and returns a Starter
-// that starts it with the bootstrap; the worker's stderr goes to stderr.
-// Without pwsh every start fails with ErrNoPwsh, so the supervisor gives
-// up and the worker readiness check reports it.
+// PwshStarter returns a Starter that starts pwsh with the bootstrap; the
+// worker's stderr goes to stderr. pwsh is resolved to an absolute path on
+// the first start that finds it and never looked up again. Until then every
+// start fails with ErrNoPwsh, which the supervisor treats as
+// misconfiguration: it retries every PwshRetryInterval and keeps the worker
+// readiness check failing.
 func PwshStarter(stderr io.Writer) Starter {
-	path, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
+	var (
+		mu   sync.Mutex
+		path string
+	)
 	return func(context.Context) (Process, error) {
-		if err != nil {
-			return nil, err
+		mu.Lock()
+		if path == "" {
+			p, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
+			if err != nil {
+				mu.Unlock()
+				return nil, err
+			}
+			path = p
 		}
-		return StartCommand(pwshCommand(path), stderr)
+		cmd := pwshCommand(path)
+		mu.Unlock()
+		return StartCommand(cmd, stderr)
 	}
 }
 
@@ -386,7 +414,10 @@ type Supervisor struct {
 	failed  error
 	lastErr error
 	hello   json.RawMessage // the current worker's hello
-	changed chan struct{}   // closed and replaced when cur or failed changes
+	noPwsh  error           // ErrNoPwsh while pwsh is missing
+	pausing time.Duration   // the pause Run is in (restart backoff, pwsh retry); 0 otherwise
+	paused  int             // pauses completed, for tests
+	changed chan struct{}   // closed and replaced when the state above changes
 }
 
 // NewSupervisor returns a supervisor; Run starts the worker.
@@ -426,11 +457,20 @@ func (s *Supervisor) current() (*worker, error) {
 	switch {
 	case s.failed != nil:
 		return nil, status.Errorf(codes.Unavailable, "PowerShell worker unavailable: %v", s.failed)
+	case s.noPwsh != nil:
+		return nil, status.Errorf(codes.Unavailable, "PowerShell worker unavailable: %v", s.noPwsh)
 	case s.cur == nil:
 		return nil, status.Error(codes.Unavailable, "PowerShell worker is restarting")
 	default:
 		return s.cur, nil
 	}
+}
+
+// worker returns the running worker, nil while none runs.
+func (s *Supervisor) worker() *worker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur
 }
 
 // Check is the readiness check "worker" (pwsh worker alive).
@@ -440,6 +480,8 @@ func (s *Supervisor) Check(context.Context) error {
 	switch {
 	case s.failed != nil:
 		return s.failed
+	case s.noPwsh != nil:
+		return s.noPwsh
 	case s.cur == nil && s.lastErr != nil:
 		return fmt.Errorf("PowerShell worker is not running: %w", s.lastErr)
 	case s.cur == nil:
@@ -451,40 +493,122 @@ func (s *Supervisor) Check(context.Context) error {
 
 // Run starts the worker and restarts it whenever it ends, until ctx ends
 // (nil) or the worker exited MaxWorkerExits times within WorkerExitWindow
-// (ErrWorkerFailing).
+// (ErrWorkerFailing). Restarts back off from InitialRestartBackoff,
+// doubling up to MaxRestartBackoff, and start over once a worker ran for
+// BackoffResetAfter. A missing pwsh (ErrNoPwsh) is misconfiguration, not a
+// worker exit: Run keeps going, retries every PwshRetryInterval and the
+// worker check reports it until pwsh is found.
 func (s *Supervisor) Run(ctx context.Context) error {
+	backoff := InitialRestartBackoff
 	for {
-		err := s.runOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-		if s.opts.OnExit != nil {
-			s.opts.OnExit()
-		}
-		if gaveUp := s.recordExit(err); gaveUp != nil {
+		uptime, err := s.runOnce(ctx)
+		next, stop, gaveUp := s.afterRun(ctx, uptime, err, backoff)
+		if stop {
 			return gaveUp
 		}
+		backoff = next
 	}
 }
 
-// runOnce starts one worker and waits until it ends or ctx ends.
-func (s *Supervisor) runOnce(ctx context.Context) error {
+// afterRun handles the end of one worker run: a stop through ctx, a
+// missing pwsh, or an exit that counts toward the give-up rule and is
+// followed by the restart pause. It returns the next restart pause,
+// whether Run stops, and ErrWorkerFailing when it gives up.
+func (s *Supervisor) afterRun(ctx context.Context, uptime time.Duration, err error, backoff time.Duration) (time.Duration, bool, error) {
+	select {
+	case <-ctx.Done():
+		return 0, true, nil
+	default:
+	}
+	if s.setNoPwsh(err) {
+		return backoff, !s.pause(ctx, PwshRetryInterval), nil
+	}
+	if s.opts.OnExit != nil {
+		s.opts.OnExit()
+	}
+	if gaveUp := s.recordExit(err); gaveUp != nil {
+		return 0, true, gaveUp
+	}
+	if uptime >= BackoffResetAfter {
+		backoff = InitialRestartBackoff
+	}
+	if !s.pause(ctx, backoff) {
+		return 0, true, nil
+	}
+	return nextBackoff(backoff), false, nil
+}
+
+// nextBackoff doubles a restart pause up to MaxRestartBackoff.
+func nextBackoff(d time.Duration) time.Duration { return min(2*d, MaxRestartBackoff) }
+
+// setNoPwsh records whether the last start failed for lack of pwsh and logs
+// when that starts and stops being the case. It reports whether pwsh is
+// missing.
+func (s *Supervisor) setNoPwsh(err error) bool {
+	missing := errors.Is(err, ErrNoPwsh)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case missing && s.noPwsh == nil:
+		s.opts.Log.Error("PowerShell 7 not found; the host agent stays unready and looks again periodically",
+			"error", err, "retry", PwshRetryInterval)
+	case !missing && s.noPwsh != nil:
+		s.opts.Log.Info("PowerShell 7 found")
+	}
+	if missing {
+		s.noPwsh = err
+	} else {
+		s.noPwsh = nil
+	}
+	s.notifyLocked()
+	return missing
+}
+
+// pause waits d on the clock; it reports false when ctx ended first.
+func (s *Supervisor) pause(ctx context.Context, d time.Duration) bool {
+	t := s.opts.Clock.NewTimer(d)
+	defer t.Stop()
+	s.setPausing(d, false)
+	defer s.setPausing(0, true)
+	select {
+	case <-t.C():
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Supervisor) setPausing(d time.Duration, done bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pausing = d
+	if done {
+		s.paused++
+	}
+	s.notifyLocked()
+}
+
+// runOnce starts one worker and waits until it ends or ctx ends. It
+// returns how long the worker ran (0 if it never started).
+func (s *Supervisor) runOnce(ctx context.Context) (time.Duration, error) {
 	w, err := s.spawn(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	s.setNoPwsh(nil)
+	// The uptime counts from before the worker is published, so whoever
+	// sees it running also sees its start time.
+	started := s.opts.Clock.Now()
 	s.setCurrent(w)
 	select {
 	case <-w.done:
 		s.setCurrent(nil)
-		return w.err
+		return s.opts.Clock.Now().Sub(started), w.err
 	case <-ctx.Done():
 		s.setCurrent(nil)
 		w.stop()
 		<-w.done
-		return nil
+		return 0, nil
 	}
 }
 

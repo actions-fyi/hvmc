@@ -50,30 +50,54 @@ func newPoller(hv *hyperV, sup *Supervisor, clk agent.Clock) *poller {
 // run polls until ctx ends.
 func (p *poller) run(ctx context.Context) {
 	for {
-		started := p.sup.Changed()
-		p.poll(ctx)
-		t := p.clk.NewTimer(p.interval)
-		select {
-		case <-ctx.Done():
-			t.Stop()
+		before := p.sup.worker()
+		polled := before
+		if p.poll(ctx) {
+			// Read through the worker that is up now; a restart right
+			// after the read is picked up by the next interval.
+			polled = p.sup.worker()
+		}
+		if !p.waitNext(ctx, polled) {
 			return
-		case <-t.C():
-		case <-started:
-			t.Stop()
 		}
 	}
 }
 
-func (p *poller) poll(ctx context.Context) {
+// waitNext waits for the next poll: the interval, or a worker other than w
+// coming up (a fresh snapshot right after a restart). Other supervisor state
+// changes do not re-poll, so the poll timer, once armed, stays armed until
+// it fires. It reports false when ctx ended.
+func (p *poller) waitNext(ctx context.Context, w *worker) bool {
+	t := p.clk.NewTimer(p.interval)
+	defer t.Stop()
+	for {
+		changed := p.sup.Changed()
+		if cur := p.sup.worker(); cur != nil && cur != w {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C():
+			return true
+		case <-changed:
+		}
+	}
+}
+
+// poll reads every VM once and records the result; it reports whether
+// the read succeeded.
+func (p *poller) poll(ctx context.Context) bool {
 	list, at, err := p.hv.vms(ctx)
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	var snap *agentv1.VMSnapshot
 	if err == nil {
 		snap = snapshotMessage(list, at)
 	}
 	p.record(snap, err)
+	return err == nil
 }
 
 // record stores the result of a VM read (from the poll or ListVMs).

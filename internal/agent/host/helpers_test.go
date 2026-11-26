@@ -102,6 +102,12 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func (b *syncBuffer) entries(t *testing.T) []agent.AuditEntry {
 	t.Helper()
 	b.mu.Lock()
@@ -272,4 +278,24 @@ func startupReq(vm string, n int64) *agentv1.SetStartupRequest {
 
 func limitsReq(vm string, maximum int64) *agentv1.SetDynamicLimitsRequest {
 	return &agentv1.SetDynamicLimitsRequest{VmName: vm, MaximumBytes: &maximum}
+}
+
+// skipPause waits until the supervisor pauses (restart backoff or pwsh
+// retry), advances the clock by the pause, waits until the pause is over
+// and returns its length.
+func skipPause(t *testing.T, sup *Supervisor, clk testClock) time.Duration {
+	t.Helper()
+	state := func() (time.Duration, int) {
+		sup.mu.Lock()
+		defer sup.mu.Unlock()
+		return sup.pausing, sup.paused
+	}
+	var (
+		d    time.Duration
+		done int
+	)
+	waitFor(t, "supervisor pause", sup.Changed, func() bool { d, done = state(); return d > 0 })
+	clk.Advance(d)
+	waitFor(t, "end of the pause", sup.Changed, func() bool { _, n := state(); return n > done })
+	return d
 }

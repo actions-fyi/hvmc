@@ -127,6 +127,7 @@ func TestWorkerProcess(t *testing.T) {
 	clk.Advance(DefaultCallTimeout)
 	wantCode(t, "hung call", <-done, codes.DeadlineExceeded)
 	<-changed
+	skipPause(t, sup, clk)
 	e.waitWorker()
 	// The new process starts from the fixture again.
 	if v := e.vm("windows-node-1"); v.GetAssignedBytes() != 8*gib {
