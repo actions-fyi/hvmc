@@ -334,6 +334,27 @@ func TestFutureTimestampsAreClampedToReceiveTime(t *testing.T) {
 	}
 }
 
+// A hung agent costs one Check timeout per round, not the longer deadline
+// of the data polls, so it turns Unreachable after FailureThreshold
+// rounds of about CheckInterval + CheckTimeout (DESIGN §4.8).
+func TestHungAgentFailsWithinCheckTimeout(t *testing.T) {
+	e := newEnv(t)
+	tr := e.tracker(func(o *agentclient.TrackerOptions) {
+		o.CallTimeout, o.CheckTimeout = time.Second, 100*time.Millisecond
+	})
+	tr.Poll(e.ctx)
+	e.wantState(tr, "host", ledger.AgentReady)
+	must(t, e.sim.SetHang("host", "*"))
+	for range agentclient.DefaultFailureThreshold {
+		start := time.Now()
+		tr.Poll(e.ctx)
+		if d := time.Since(start); d >= 600*time.Millisecond {
+			t.Fatalf("a poll of the hung host took %s, want about the Check timeout (100ms), not the data deadline (1s)", d)
+		}
+	}
+	e.wantState(tr, "host", ledger.AgentUnreachable)
+}
+
 // Acceptance: a policy mismatch sends the proposal exactly once per digest.
 func TestPolicyProposedOncePerDigest(t *testing.T) {
 	e := newEnv(t)

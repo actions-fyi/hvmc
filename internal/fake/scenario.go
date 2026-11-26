@@ -66,9 +66,10 @@ type Scenario struct {
 type AgentBehaviour struct {
 	// NotServing makes the agent's health service report NOT_SERVING.
 	NotServing bool `json:"notServing,omitempty"`
-	// Hang lists RPC method names (e.g. "SetStartup", or "*" for all) that
-	// block until the caller's deadline instead of answering. On the host,
-	// Hyper-V calls also end at the agent's cmdlet timeout.
+	// Hang lists RPC method names (e.g. "SetStartup", "Check" for the
+	// health check, or "*" for all) that block until the caller's deadline
+	// instead of answering. On the host, Hyper-V calls also end at the
+	// agent's cmdlet timeout.
 	Hang []string `json:"hang,omitempty"`
 	// Stale freezes the agent's observations: reads keep returning the
 	// values captured when Stale was set, with an observed_at that no longer
@@ -366,10 +367,11 @@ func (sc *Scenario) guest(name string) *GuestSpec {
 	return nil
 }
 
-// Host agent and guest agent RPC names usable in AgentBehaviour.Hang.
+// Host agent and guest agent RPC names usable in AgentBehaviour.Hang;
+// "Check" is the health check.
 var (
-	hostMethods  = []string{"GetHost", "ListVMs", "WatchVMs", "SetStartup", "SetDynamicLimits", "ProposePolicy", "RotateCertificate", "InstallCertificate"}
-	guestMethods = []string{"GetMemory", "WatchMemory", "RotateCertificate", "InstallCertificate"}
+	hostMethods  = []string{"GetHost", "ListVMs", "WatchVMs", "SetStartup", "SetDynamicLimits", "ProposePolicy", "RotateCertificate", "InstallCertificate", "Check"}
+	guestMethods = []string{"GetMemory", "WatchMemory", "RotateCertificate", "InstallCertificate", "Check"}
 )
 
 // problems collects validation errors.

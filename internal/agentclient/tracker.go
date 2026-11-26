@@ -510,13 +510,23 @@ func (t *Tracker) pollAgent(ctx context.Context, a *tracked) {
 	t.ensureWatchesLocked(a) //nolint:contextcheck // agent workers live as long as Start's context, not the caller's
 	t.mu.Unlock()
 
+	// Check first: a hung agent then costs one CheckTimeout per round, not
+	// the longer CallTimeout of the data polls, so it turns Unreachable
+	// after FailureThreshold rounds (DESIGN §4.8). Its data is not polled
+	// in a failed round; it turns stale on its own. A successful check is
+	// recorded after the data polls, so the round is evaluated with its
+	// data (no Degraded "no data" blip on first contact).
+	st, err := t.check(ctx, ep)
+	if err != nil {
+		t.recordCheck(a, ep, st, err)
+		return
+	}
 	if ep.Role == RoleHost {
 		t.pollHost(ctx, a, ep)
 	} else {
 		t.pollGuest(ctx, a, ep)
 	}
-	st, err := t.check(ctx, ep)
-	t.recordCheck(a, ep, st, err)
+	t.recordCheck(a, ep, st, nil)
 	t.maybeRotate(ctx, a, ep)
 }
 
