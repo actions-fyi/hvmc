@@ -10,9 +10,11 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-// TestProbeRunner records what the CI runner offers (temporary; it never
-// fails): the Hyper-V Administrators alias, vmms, elevation and pwsh.
+// TestProbeRunner records what the CI runner offers (temporary): the
+// Hyper-V Administrators alias, vmms, elevation and pwsh. It always fails,
+// because the Windows job runs go test without -v and hides passing logs.
 func TestProbeRunner(t *testing.T) {
+	defer t.Error("probe output above (deliberate failure; temporary test)")
 	sid, err := windows.StringToSid("S-1-5-32-578")
 	if err != nil {
 		t.Fatal(err)
