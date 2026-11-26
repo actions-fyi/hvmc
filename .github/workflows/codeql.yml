@@ -31,4 +31,4 @@ jobs:
       security-events: write # Upload the results to code scanning
       actions: read # Let CodeQL read the workflow run
       id-token: write # Get an Octo STS token to post CodeQL Results
-    uses: actions-fyi/shared-workflows/.github/workflows/_codeql.yml@v4.3.0
+    uses: actions-fyi/shared-workflows/.github/workflows/_codeql.yml@v4.4.0
