@@ -89,3 +89,7 @@ jobs:
         run: go build ./...
       - name: Test
         run: go test ./...
+      - name: Service round trip (installs, upgrades and removes the agent service)
+        # Needs the runner's elevated administrator; built only with the
+        # servicetest tag, so a plain `go test ./...` never installs a service.
+        run: go test -tags servicetest -run '^TestServiceRoundTrip$' -count=1 -v -timeout 15m ./internal/agent/svc/
