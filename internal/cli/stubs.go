@@ -37,7 +37,7 @@ func newAgentCommand(e env) *cobra.Command {
 		newAgentEnrollCommand(e),
 		stub("status", "Print service state, health checks and certificate expiry"),
 		group("policy", "Manage the host agent's local write policy",
-			stub("sync", "Show the proposed policy's diff and activate it after confirmation"),
+			newAgentPolicySyncCommand(),
 		),
 	)
 }
