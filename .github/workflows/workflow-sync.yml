@@ -49,7 +49,7 @@ jobs:
     permissions:
       contents: read # Declared by the workflows job
       id-token: write # Exchange the job's OIDC token with Octo STS
-    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync.yml@v0.8.0
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync.yml@v0.8.1
     with:
       dry-run: ${{ inputs.dry-run || false }} # Empty on push, schedule and repository_dispatch
 
@@ -61,4 +61,4 @@ jobs:
     permissions:
       contents: read # The egress firewall reads .github/egress-firewall.yaml with this token
       id-token: write # Exchange the job's OIDC token with Octo STS
-    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync-dispatch.yml@v0.8.0
+    uses: actions-fyi/sync-workflows/.github/workflows/_workflow-sync-dispatch.yml@v0.8.1
