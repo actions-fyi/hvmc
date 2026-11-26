@@ -39,7 +39,6 @@ func TestStubs(t *testing.T) {
 		"agent install", "agent uninstall", "agent status",
 		"check",
 		"test run", "test list", "test logs",
-		"token create",
 	} {
 		t.Run(path, func(t *testing.T) {
 			code, out, errOut := runCLI(t, strings.Fields(path)...)

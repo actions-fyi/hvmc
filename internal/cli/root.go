@@ -105,7 +105,7 @@ func newRootCommand(e env) *cobra.Command {
 		newCheckCommand(),
 		newTestCommand(),
 		newCACommand(kubeReader),
-		newTokenCommand(),
+		newTokenCommand(e, kubeClient),
 	)
 	return root
 }

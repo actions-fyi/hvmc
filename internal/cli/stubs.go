@@ -66,9 +66,3 @@ func newTestCommand() *cobra.Command {
 		stub("logs", "Show a test run's steps and measurements"),
 	)
 }
-
-func newTokenCommand() *cobra.Command {
-	create := stub("create", "Re-issue a bootstrap token for an agent")
-	create.Flags().String("agent", "", "agent name")
-	return group("token", "Manage agent bootstrap tokens", create)
-}

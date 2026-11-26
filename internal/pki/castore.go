@@ -111,12 +111,17 @@ func hostConfigOwnerRef(ctx context.Context, r client.Reader) (metav1.OwnerRefer
 	if err := r.Get(ctx, types.NamespacedName{Name: v1alpha1.HostConfigName}, &hc); err != nil {
 		return metav1.OwnerReference{}, fmt.Errorf("get HostConfig %q for owner reference: %w", v1alpha1.HostConfigName, err)
 	}
+	return hostConfigRef(&hc), nil
+}
+
+// hostConfigRef returns an owner reference to hc (see hostConfigOwnerRef).
+func hostConfigRef(hc *v1alpha1.HostConfig) metav1.OwnerReference {
 	return metav1.OwnerReference{
 		APIVersion: v1alpha1.GroupVersion.String(),
 		Kind:       "HostConfig",
 		Name:       hc.Name,
 		UID:        hc.UID,
-	}, nil
+	}
 }
 
 // ensureOwnerRef adds ref to obj's owner references unless an owner with
