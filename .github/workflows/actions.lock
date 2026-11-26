@@ -15,6 +15,7 @@ workflows:
     '.github/workflows/label-sync.yml': []
     '.github/workflows/pr-metadata.yml': []
     '.github/workflows/renovate.yml': []
+    '.github/workflows/workflow-sync.yml': []
     '.github/workflows/zizmor.yml': []
 dependencies:
     'actions/checkout@v7.0.1':
