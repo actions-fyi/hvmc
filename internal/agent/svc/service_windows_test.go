@@ -10,15 +10,18 @@ package svc
 // Windows CI job sets in its own step; it needs an elevated administrator
 // on a machine without hvmc and fails, rather than skips, elsewhere.
 //
-// The host agent's worker reads the mock Hyper-V module of
-// internal/agent/host/testdata through a test-only Environment value of
-// the service, so readiness does not depend on Hyper-V working on the
-// runner.
+// Where vmms runs, the agent runs as installed, on the machine's Hyper-V.
+// Where it cannot run, the start fails on the vmms dependency; the test
+// asserts that, then clears the dependency and points the worker at the
+// mock Hyper-V module of internal/agent/host/testdata through the
+// service's Environment value (the SCM's per-service environment, set by
+// the test only) and starts it.
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,17 +57,12 @@ func TestServiceRoundTrip(t *testing.T) {
 	o := InstallOptions{
 		Role: agent.RoleHost, Agent: "hyperv-1", Enroll: ep.URL, Token: testToken, CASHA256: ep.Fingerprint,
 		RootCAs: ep.CA.Pool(), Source: bin, Paths: paths, Defaults: paths, Clock: agent.SystemClock(),
-		In: strings.NewReader("y\n"), Out: testWriter{t}, noStart: true,
+		In: strings.NewReader("y\n"), Out: testWriter{t},
 	}
 	ctx := context.Background()
+	r := &roundTrip{t: t, p: p, vmms: vmmsRuns(t)}
 
-	// Install (left stopped, to point the worker at the mock first).
-	if err := Install(ctx, p, o); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	checkInstalled(t, p, paths)
-	stageMock(t)
-	start(t, p, o)
+	r.install(o)
 	pid := checkProcess(t, p)
 
 	// Recovery restarts a killed agent.
@@ -76,18 +74,16 @@ func TestServiceRoundTrip(t *testing.T) {
 	before := readFiles(t, paths.Config, paths.Serving(), paths.CA())
 	up := o
 	up.Role, up.Agent, up.Enroll, up.Token, up.CASHA256 = "", "", "", "", ""
-	if err := Install(ctx, p, up); err != nil {
-		t.Fatalf("upgrade: %v", err)
-	}
+	r.install(up)
 	if after := readFiles(t, paths.Config, paths.Serving(), paths.CA()); !slices.Equal(before, after) {
 		t.Error("the upgrade changed agent.yaml, the serving pair or the CA")
 	}
 	if n := ep.used.Load(); n != 1 {
 		t.Errorf("%d enrollments, want 1", n)
 	}
-	checkInstalled(t, p, paths)
-	start(t, p, up)
-	checkProcess(t, p)
+	if next := checkProcess(t, p); next == pid {
+		t.Errorf("the upgrade did not restart the agent (pid %d)", pid)
+	}
 	var status strings.Builder
 	if err := Status(ctx, p, StatusOptions{Paths: paths, Out: &status}); err != nil {
 		t.Errorf("status: %v\n%s", err, status.String())
@@ -206,26 +202,59 @@ func setDACL(t *testing.T, path, sddl string) {
 	}
 }
 
-// start starts the installed service and waits until the agent is ready.
-// The service keeps its vmms dependency when vmms runs or starts on this
-// machine; otherwise, after the dependency was checked, it is cleared.
-func start(t *testing.T, p Platform, o InstallOptions) {
+// roundTrip installs the host agent the way the machine allows.
+type roundTrip struct {
+	t      *testing.T
+	p      Platform
+	vmms   bool // vmms runs here
+	staged bool
+}
+
+// install runs Install and checks what it configured. Where vmms cannot
+// run, Install must fail on the start with the vmms dependency; the
+// fallback then clears the dependency, stages the mock and starts the
+// service.
+func (r *roundTrip) install(o InstallOptions) {
+	t := r.t
 	t.Helper()
-	ensureVMMS(t)
+	err := Install(context.Background(), r.p, o)
+	checkInstalled(t, r.p, o.Paths)
+	if r.vmms {
+		if err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		return
+	}
+	if !errors.Is(err, windows.ERROR_SERVICE_DEPENDENCY_FAIL) {
+		t.Fatalf("install without a running vmms: %v, want the dependency failure", err)
+	}
+	t.Logf("fallback: install failed on the vmms dependency as expected (%v); clearing it and using the mock", err)
+	err = withService(func(_ *mgr.Mgr, s *mgr.Service) error { return setDependencies(s.Handle, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.staged {
+		stageMock(t)
+		r.staged = true
+	}
 	ctx := context.Background()
-	if err := p.StartService(ctx); err != nil {
+	if err := r.p.StartService(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	cfg, err := agent.LoadConfig(o.Paths.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := waitReady(ctx, p, o, cfg, &printer{w: testWriter{t}}); err != nil {
+	o.Clock = agent.SystemClock()
+	o.HTTP = &http.Client{Timeout: 5 * time.Second}
+	o.ReadyTimeout = DefaultReadyTimeout
+	if err := waitReady(ctx, r.p, o, cfg, &printer{w: testWriter{t}}); err != nil {
 		t.Fatalf("ready: %v", err)
 	}
 }
 
-func ensureVMMS(t *testing.T) {
+// vmmsRuns reports whether vmms runs, starting it if needed.
+func vmmsRuns(t *testing.T) bool {
 	t.Helper()
 	m, err := mgr.Connect()
 	if err != nil {
@@ -239,27 +268,19 @@ func ensureVMMS(t *testing.T) {
 	defer func() { _ = v.Close() }()
 	q, err := v.Query()
 	if err == nil && q.State != svc.Running {
-		err = v.Start()
-		if err == nil {
+		if err = v.Start(); err == nil {
 			err = waitUntil(context.Background(), agent.SystemClock(), time.Minute, "vmms", func() (bool, error) {
 				q, err := v.Query()
 				return err == nil && q.State == svc.Running, err
 			})
 		}
 	}
-	if err == nil {
-		t.Log("vmms runs; the service keeps its dependency")
-		return
-	}
-	t.Logf("vmms does not run on this machine (%v); clearing the service's vmms dependency for the start", err)
-	s, err := m.OpenService(ServiceName)
 	if err != nil {
-		t.Fatal(err)
+		t.Logf("vmms does not run on this machine: %v", err)
+		return false
 	}
-	defer func() { _ = s.Close() }()
-	if err := setDependencies(s.Handle, nil); err != nil {
-		t.Fatal(err)
-	}
+	t.Log("vmms runs; the agent runs on this machine's Hyper-V")
+	return true
 }
 
 // checkInstalled checks the service's configuration, the ACLs, the group,
