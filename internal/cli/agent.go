@@ -14,15 +14,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/matfax/hvmc/internal/agent"
+	"github.com/matfax/hvmc/internal/agent/host"
 	"github.com/matfax/hvmc/internal/policy"
 	"github.com/matfax/hvmc/internal/version"
 )
 
 // agentServices maps a role to the constructor of its gRPC service. The
-// host agent (internal/agent/host) and the guest agent
-// (internal/agent/guest) add themselves here; until then `agent run`
-// reports the role as not implemented.
-var agentServices = map[agent.Role]func() agent.Service{}
+// guest agent (internal/agent/guest) adds itself here; until then `agent
+// run` reports that role as not implemented.
+var agentServices = map[agent.Role]func() agent.Service{
+	agent.RoleHost: host.New,
+}
 
 // addAgentPathFlags adds --config and --state-dir with the platform's
 // defaults (DESIGN §4.5).
