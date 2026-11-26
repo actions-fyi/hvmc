@@ -15,9 +15,12 @@ Fixtures for the host agent's worker tests. The mock `Hyper-V` module
 - `errors.json` holds the error records the cmdlets throw: message, error
   category, error ID and HResult.
 
-The scenarios (`host`: grows, Dynamic Memory, VM states; `refused-shrink`,
-`partial-shrink`, `vmms-down`, `hang`, `out-of-memory`) and error records are
-written from the documented cmdlet behaviour, not recorded. Fixtures
-recorded on a real Hyper-V host can replace them file by file as long as
-they keep this schema; messages are never parsed, so recordings in any
-language work.
+**These fixtures are reconstructed, not captured.** The scenarios (`host`:
+grows, Dynamic Memory, VM states; `refused-shrink`, `partial-shrink`,
+`vmms-down`, `hang`, `out-of-memory`) and the error records, including their
+messages, error IDs and HResults, are written from documented cmdlet
+behaviour. None was recorded on a real Hyper-V host. They are meant to be
+replaced by records from real hosts, exported by the host agent's
+diagnostics (`GetDiagnostics`, DESIGN §4.2). Recordings can replace them
+file by file as long as they keep this schema; messages are never parsed,
+so recordings in any language work.
