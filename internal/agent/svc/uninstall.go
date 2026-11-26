@@ -85,23 +85,80 @@ func removeBinary(p Platform, out *printer) error {
 	return err
 }
 
-// removeState removes the state directory and agent.yaml, and the
-// configuration's directory when that is empty then (/etc/hvmc).
+// removeState removes the files the agent creates: agent.yaml, the
+// pinned CA, the serving pairs, the pending policy, the audit log and the
+// log files with their rotations, and leftover temporary files of their
+// atomic writes. Then it removes the log, state and configuration
+// directories if that leaves them empty. It never deletes a tree: a
+// mistyped --state-dir loses nothing that hvmc did not write, and a
+// directory that still holds other files is kept and reported.
 func removeState(paths agent.Paths) error {
-	errs := []error{os.RemoveAll(paths.State)}
-	if err := os.Remove(paths.Config); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		errs = append(errs, err)
+	var errs []error
+	errs = append(errs, removeOwn(filepath.Dir(paths.Config), filepath.Base(paths.Config)))
+	errs = append(errs, removeOwn(paths.State, filepath.Base(paths.CA()), filepath.Base(paths.Serving()),
+		filepath.Base(paths.PreviousServing()), filepath.Base(paths.PendingPolicy()), filepath.Base(paths.AuditLog())))
+	if paths.Logs != "" {
+		errs = append(errs, removeOwn(paths.Logs, logFile), removeEmptyDir(paths.Logs))
 	}
+	errs = append(errs, removeEmptyDir(paths.State))
 	if dir := filepath.Dir(paths.Config); !samePath(dir, paths.State) {
-		// Fails harmlessly when the directory holds anything else.
-		if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) && !isNotEmpty(dir) {
+		errs = append(errs, removeEmptyDir(dir))
+	}
+	return errors.Join(errs...)
+}
+
+// removeOwn removes the files of dir that are one of names, a rotation of
+// one (name.N) or a temporary file of an atomic write (.name.tmp-*).
+func removeOwn(dir string, names ...string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if e.IsDir() || !ownFile(e.Name(), names) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func isNotEmpty(dir string) bool {
+func ownFile(file string, names []string) bool {
+	for _, n := range names {
+		if strings.EqualFold(file, n) || strings.HasPrefix(file, "."+n+".tmp-") {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(file, n+"."); ok && rest != "" && strings.Trim(rest, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// logFile is the agent's log file in Paths.Logs (agent.NewLogger).
+const logFile = "agent.log"
+
+// removeEmptyDir removes dir if it is empty; a directory that still holds
+// files is an error that names it, a missing one is not.
+func removeEmptyDir(dir string) error {
 	entries, err := os.ReadDir(dir)
-	return err == nil && len(entries) > 0
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case len(entries) > 0:
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return fmt.Errorf("kept %s: it holds files hvmc did not create (%s)", dir, strings.Join(names, ", "))
+	}
+	return os.Remove(dir)
 }

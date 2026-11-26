@@ -237,3 +237,42 @@ func TestWaitUntil(t *testing.T) {
 		t.Errorf("canceled: %v", err)
 	}
 }
+
+// TestRemoveStateOnlyOwnFiles: --remove-state never deletes a tree, only
+// the files the agent writes, and keeps a directory that holds others.
+func TestRemoveStateOnlyOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	paths := agent.Paths{Config: filepath.Join(dir, "agent.yaml"), State: dir, Logs: filepath.Join(dir, "logs")}
+	own := []string{
+		"agent.yaml", "ca.crt", "serving.pem", "serving.previous.pem", "policy.pending.yaml",
+		"audit.log", "audit.log.1", "audit.log.5", ".serving.pem.tmp-123",
+		filepath.Join("logs", "agent.log"), filepath.Join("logs", "agent.log.2"),
+	}
+	foreign := []string{"notes.txt", "audit.log.bak", filepath.Join("data", "keep.db")}
+	for _, f := range append(append([]string{}, own...), foreign...) {
+		p := filepath.Join(dir, f)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := removeState(paths)
+	if err == nil || !strings.Contains(err.Error(), "kept "+dir) || !strings.Contains(err.Error(), "notes.txt") {
+		t.Errorf("removeState: %v, want the kept directory named", err)
+	}
+	for _, f := range own {
+		if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: %v, want removed", f, err)
+		}
+	}
+	for _, f := range foreign {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s: %v, want kept", f, err)
+		}
+	}
+	if _, err := os.Stat(paths.Logs); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("empty logs directory: %v, want removed", err)
+	}
+}
