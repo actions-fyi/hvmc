@@ -519,7 +519,8 @@ const listRulesScript = `Get-NetFirewallRule -Group hvmc-agent -ErrorAction Sile
   $svc = ($_ | Get-NetFirewallServiceFilter).Service
   $addr = (($_ | Get-NetFirewallAddressFilter).RemoteAddress) -join ','
   "$($_.Name) $port $prog $svc $addr"
-}`
+}
+exit 0`
 
 func firewallRulesOnMachine(t *testing.T) []string {
 	t.Helper()
