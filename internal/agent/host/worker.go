@@ -338,6 +338,20 @@ func (w *worker) readLoop() error {
 	}
 }
 
+// send writes one frame to the worker without blocking the caller: a
+// worker that does not read its stdin (the script is larger than a pipe
+// buffer) must not block the supervisor beyond the call timeout, which
+// kills it and so ends the write. A failed write kills the worker, which
+// ends the waiting call with UNAVAILABLE.
+func (w *worker) send(frame []byte) {
+	go func() {
+		if err := writeFrame(w.proc.Stdin(), frame); err != nil {
+			w.log.Warn("writing to the PowerShell worker failed; killing it", "error", err)
+			w.stop()
+		}
+	}()
+}
+
 // stop kills the process once.
 func (w *worker) stop() {
 	w.kill.Do(func() { _ = w.proc.Kill() })
@@ -482,11 +496,7 @@ func (s *Supervisor) spawn(ctx context.Context) (*worker, error) {
 	}
 	w := startWorker(p, s.opts.Log)
 	if s.opts.Script != nil {
-		if err := writeFrame(p.Stdin(), s.opts.Script); err != nil {
-			w.stop()
-			<-w.done
-			return nil, fmt.Errorf("send worker script: %w", err)
-		}
+		w.send(s.opts.Script)
 	}
 	r, err := s.await(ctx, w, 0)
 	if err == nil && !r.OK {
@@ -582,11 +592,7 @@ func (s *Supervisor) Call(ctx context.Context, op string, args, result any) erro
 		<-s.sem
 		return status.Errorf(codes.Internal, "encode %s request: %v", op, err)
 	}
-	if err := writeFrame(w.proc.Stdin(), payload); err != nil {
-		w.stop()
-		<-s.sem
-		return status.Errorf(codes.Unavailable, "PowerShell worker is not accepting calls: %v", err)
-	}
+	w.send(payload)
 	type outcome struct {
 		r   response
 		err error

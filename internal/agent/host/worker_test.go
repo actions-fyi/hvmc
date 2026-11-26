@@ -369,6 +369,24 @@ func TestSupervisorFailedStartCounts(t *testing.T) {
 	}
 }
 
+func TestSupervisorWorkerNotReadingStdin(t *testing.T) {
+	h := newFakeHost(loadFixture(t, "host"))
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) })
+	h.stall = stall
+	e := newSupEnv(t, h, []byte("# script"))
+	<-h.hung
+	e.clk.waitTimer(t) // the hello timer runs although the script write blocks
+	e.clk.Advance(DefaultCallTimeout)
+	e.waitUp() // killed, counted and restarted
+	if e.exitCount() != 1 || h.startCount() != 1 {
+		t.Errorf("exits %d, started workers %d; want 1, 1", e.exitCount(), h.startCount())
+	}
+	if _, err := e.vms(testCtx(t)); err != nil {
+		t.Errorf("after the restart: %v", err)
+	}
+}
+
 func TestSupervisorCheckBeforeStart(t *testing.T) {
 	sup := NewSupervisor(SupervisorOptions{Start: newFakeHost(loadFixture(t, "host")).starter(false), Clock: newTestClock()})
 	if err := sup.Check(context.Background()); err == nil {

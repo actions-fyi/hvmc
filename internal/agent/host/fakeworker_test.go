@@ -78,8 +78,9 @@ type fakeHost struct {
 	hangOps  map[string]bool // op → never answers
 	failNext int             // next n workers fail to start (startup error)
 	starts   int
-	hung     chan string // receives the op of each call that hangs
-	scripts  [][]byte    // frame 0 of every worker
+	hung     chan string   // receives the op of each call that hangs
+	stall    chan struct{} // non-nil: the next worker never reads stdin until closed
+	scripts  [][]byte      // frame 0 of every worker
 }
 
 func newFakeHost(f *fixture) *fakeHost {
@@ -104,6 +105,9 @@ var errFakeExit = errors.New("fake worker exit")
 // serve speaks the worker protocol on r/w until r ends or the worker
 // crashes. expectScript reads frame 0 first.
 func (h *fakeHost) serve(r io.Reader, w io.Writer, expectScript bool) error {
+	if h.stalled() {
+		return io.EOF
+	}
 	if expectScript {
 		script, err := readFrame(r)
 		if err != nil {
@@ -117,31 +121,52 @@ func (h *fakeHost) serve(r io.Reader, w io.Writer, expectScript bool) error {
 		return err
 	}
 	for {
-		frame, err := readFrame(r)
-		if err != nil {
-			return err
-		}
-		var req struct {
-			ID   uint64          `json:"id"`
-			Op   string          `json:"op"`
-			Args json.RawMessage `json:"args"`
-		}
-		if err := json.Unmarshal(frame, &req); err != nil {
-			return err
-		}
-		resp, hang, err := h.handle(req.ID, req.Op, req.Args)
-		if err != nil {
-			return err
-		}
-		if hang {
-			h.hung <- req.Op
-			_, _ = io.Copy(io.Discard, r) // until the worker is killed
-			return io.EOF
-		}
-		if err := writeJSONFrame(w, resp); err != nil {
+		if err := h.serveOne(r, w); err != nil {
 			return err
 		}
 	}
+}
+
+// serveOne answers one request. A hang returns io.EOF once the worker is
+// killed.
+func (h *fakeHost) serveOne(r io.Reader, w io.Writer) error {
+	frame, err := readFrame(r)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		ID   uint64          `json:"id"`
+		Op   string          `json:"op"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(frame, &req); err != nil {
+		return err
+	}
+	resp, hang, err := h.handle(req.ID, req.Op, req.Args)
+	if err != nil {
+		return err
+	}
+	if hang {
+		h.hung <- req.Op
+		_, _ = io.Copy(io.Discard, r) // until the worker is killed
+		return io.EOF
+	}
+	return writeJSONFrame(w, resp)
+}
+
+// stalled makes a worker that never reads stdin until h.stall is closed;
+// it reports whether this worker stalled.
+func (h *fakeHost) stalled() bool {
+	h.mu.Lock()
+	stall := h.stall
+	h.stall = nil
+	h.mu.Unlock()
+	if stall == nil {
+		return false
+	}
+	h.hung <- "stdin"
+	<-stall // reads nothing; an in-memory pipe blocks every write meanwhile
+	return true
 }
 
 // hello answers frame 0, or fails the start as Import-Module would.
