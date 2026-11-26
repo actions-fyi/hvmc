@@ -14,8 +14,10 @@ permissions: {}
 jobs:
   labels:
     name: Labels
+    # Not in a fork: a fork's labels are its owner's.
+    if: github.repository_owner == 'actions-fyi'
     # What the labels job of _label-sync.yml declares; a called job can't get more.
     permissions:
       contents: read # Check out the label config
       issues: write # Create and update labels
-    uses: actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v0.15.0
+    uses: actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v4.3.0

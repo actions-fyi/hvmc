@@ -1,0 +1,50 @@
+# Egress policy of GitHub's native egress firewall (technical preview), for every job in this
+# repository that runs on ubuntu-24.04-firewall and grants contents: read. Without contents: read,
+# the firewall can't read this file and applies no policy, silently. The file is read from the ref
+# the run is on, so a pull request runs under its own copy.
+#
+# The firewall always allows github.com, codeload.github.com, *.actions.githubusercontent.com and
+# GitHub's blob storage; everything else is listed here. The list comes from StepSecurity
+# Harden-Runner's records of this repository's runs, including the shared workflows of
+# actions-fyi/shared-workflows and the ruleset workflows of actions-fyi/ruleset-workflows, which run
+# in this repository's context. Left out on purpose:
+# - http-intake.logs.us5.datadoghq.com, Claude Code's telemetry: nothing fails without it.
+# - secrets.actions.fyi and promptguard.actions.fyi, OpenBao and TEI: only the Prompt Guard job
+#   reaches them, and it can't run on the firewall runner yet (actions-native-egress-firewall#39).
+#
+# mode: log records every request and blocks none. A repository opts in to enforce with its custom
+# property firewall: where it is true, the sync of actions-fyi/sync-workflows writes mode: enforce
+# into the repository's copy. Set it once a round of the repository's runs shows no request outside
+# the list in their firewall-decisions artifacts. This repository's own copy is the source and
+# isn't synced, so the property doesn't change it, nor actions-fyi/shared-workflows', which keeps
+# its own.
+mode: log
+allow:
+  # GitHub, beyond the defaults
+  - api.github.com # REST and GraphQL API: gh, github-script, the actions
+  - uploads.github.com # CodeQL's SARIF upload
+  - release-assets.githubusercontent.com # release downloads: bun, node, gh extensions, re2
+  - ghcr.io # actionlint's container image
+  - pkg-containers.githubusercontent.com # ghcr.io's blobs
+  # Package registries
+  - registry.npmjs.org # renovate-config-validator, Wrangler, and Claude Code through bun
+  - pypi.org # zizmor's install
+  - files.pythonhosted.org # zizmor's install
+  # Claude: the review, triage, metadata, explain and screen jobs
+  - claude.ai # Claude Code's installer
+  - downloads.claude.ai # Claude Code's binary
+  - api.anthropic.com # the model
+  # apt: claude-code-action installs bubblewrap and socat
+  - azure.archive.ubuntu.com # Ubuntu's mirror, over plain HTTP
+  - packages.microsoft.com # the runner image's Microsoft apt source
+  - esm.ubuntu.com # the runner image's Ubuntu Pro apt source
+  - motd.ubuntu.com # the runner image's apt hooks
+  # Octo STS: the CodeQL results, flowpact commit, lockfile fix and sync jobs' tokens
+  - octo-sts.dev # token exchange
+  # Sigstore: gh attestation verify of the flowpact CLI
+  - tuf-repo-cdn.sigstore.dev # TUF trust root
+  - tuf-repo.github.com # GitHub's TUF trust root
+  - tmaproduction.blob.core.windows.net # GitHub's TUF trust root storage
+  # DeepSource: _coverage.yml's report job, where coverage-providers names deepsource
+  - cli.deepsource.com # the CLI's download
+  - app.deepsource.com # the CLI's API: the OIDC exchange and the report

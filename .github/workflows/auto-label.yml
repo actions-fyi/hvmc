@@ -8,6 +8,8 @@ permissions: {}
 jobs:
   triage:
     name: Triage
+    # Not in a fork: Claude and Prompt Guard need the org's secrets, which a fork doesn't get.
+    if: github.repository_owner == 'actions-fyi'
     cache-mode: none
     # The union of what the jobs of _triage.yml declare; a called job can't get more.
     permissions:
@@ -15,7 +17,7 @@ jobs:
       id-token: write # Log in to OpenBao for Prompt Guard
       issues: write # Read the repository's labels, label issues, and escalate a flagged one
       pull-requests: write # Declared by Prompt Guard's shared workflow, unused on issues
-    uses: actions-fyi/shared-workflows/.github/workflows/_triage.yml@v0.15.0
+    uses: actions-fyi/shared-workflows/.github/workflows/_triage.yml@v4.3.0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       PROMPT_GUARD_CLIENT_ID: ${{ secrets.PROMPT_GUARD_CLIENT_ID }}

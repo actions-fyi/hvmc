@@ -1,0 +1,38 @@
+name: Report Coverage
+# Reports the coverage of the test runs to the providers the repository's custom property
+# coverage-providers names; without the property, nothing is reported. The reporting lives in
+# _coverage.yml of actions-fyi/shared-workflows; see there for what each provider needs. Like every
+# workflow here, it is distributed to the org's repositories, and each of them has it.
+#
+# It needs no opt-in: it runs only after a test run, and reports only the coverage artifacts that
+# run uploaded. A repository without tests uploads none, so there it reports nothing, and without
+# a test workflow it doesn't start at all. A workflow_run trigger matches workflows by name, not by
+# file. Test is the TypeScript template's workflow, on pushes to the default branch. Test
+# TypeScript is the org ruleset workflow, on pull requests; it runs in every repository the ruleset
+# targets, and where it finds no package it uploads no coverage. The check of another language
+# joins the list under its own name.
+#
+# The file must keep the name coverage.yml: zizmor's dangerous-triggers audit of _zizmor.yml
+# exempts this workflow_run listener by file name. A listener runs from the default branch only,
+# so a pull request that adds or changes it isn't tested by it: the change runs once it's merged.
+on:
+  workflow_run:
+    workflows: ["Test", "Test TypeScript"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  coverage:
+    name: Coverage
+    # Not in a fork: the coverage providers are the org's, and a fork names none.
+    if: github.repository_owner == 'actions-fyi'
+    cache-mode: none
+    # The union of what the jobs of _coverage.yml declare; a called job can't get more.
+    permissions:
+      actions: read # List the run's artifacts and download the coverage reports
+      contents: read # Let the egress firewall read its policy
+      pull-requests: read # Find the pull request of the run
+      code-quality: write # Upload the coverage reports to GitHub Code Quality
+      id-token: write # Exchange the job's OIDC token with DeepSource
+    uses: actions-fyi/shared-workflows/.github/workflows/_coverage.yml@v4.3.0
