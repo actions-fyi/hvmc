@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package svc
 
@@ -11,8 +11,8 @@ import (
 // caseInsensitivePaths is false: paths are case-sensitive.
 const caseInsensitivePaths = false
 
-// NewPlatform returns ErrUnsupported: only Windows has a service
-// integration so far.
+// NewPlatform returns ErrUnsupported: only Windows and Linux (systemd)
+// have a service integration.
 func NewPlatform(agent.Clock) (Platform, error) { return nil, ErrUnsupported }
 
 // LogsToStderr reports that the agent logs to stderr.

@@ -1,0 +1,31 @@
+# {{.Path}}: written by `hvmc agent install`; changes are lost at the next
+# install. Removed by `hvmc agent uninstall`.
+[Unit]
+Description={{.Description}}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart={{.ExecStart}}
+WatchdogSec={{.WatchdogSec}}
+Restart=on-failure
+RestartSec={{.RestartSec}}
+TimeoutStopSec={{.TimeoutStopSec}}
+DynamicUser=yes
+ConfigurationDirectory=hvmc
+StateDirectory=hvmc
+StateDirectoryMode=0700
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

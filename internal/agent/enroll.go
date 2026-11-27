@@ -337,7 +337,7 @@ func (e *Enrollment) Write(paths Paths) (pending bool, err error) {
 	if err := fileacl.MkdirSecure(paths.State); err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(paths.Config), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.Config), ConfigDirMode); err != nil {
 		return false, err
 	}
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: e.CA.Raw})

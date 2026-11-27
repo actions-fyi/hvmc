@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package cli
 
@@ -9,7 +9,7 @@ import (
 	"github.com/matfax/hvmc/internal/agent/svc"
 )
 
-// Only Windows has a service integration so far.
+// Only Windows and Linux have a service integration.
 func TestAgentServiceCommandsUnsupported(t *testing.T) {
 	for _, cmd := range []string{"install", "uninstall", "status"} {
 		code, _, errOut := runCLI(t, "agent", cmd)

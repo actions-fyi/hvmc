@@ -13,16 +13,18 @@ import (
 )
 
 const agentInstallLong = `Install the agent as a native system service (DESIGN §4.5), run as
-Administrator. On the first install it enrolls with the coordinator (the
-same flags as ` + "`hvmc agent enroll`" + `) and, for the host role, shows the proposed
-write policy and activates it after confirmation. Then it copies this binary
-to the system location, registers the service, its Event Log source, its
-firewall rules and (host role) its Hyper-V Administrators membership, starts
-it and waits until the agent reports ready.
+Administrator (Windows) or root (Linux). On the first install it enrolls with
+the coordinator (the same flags as ` + "`hvmc agent enroll`" + `) and, for the host role,
+shows the proposed write policy and activates it after confirmation. Then it
+copies this binary to the system location and registers the service: on
+Windows with its Event Log source, its firewall rules and (host role) its
+Hyper-V Administrators membership; on Linux as the systemd unit hvmc-agent
+with ufw rules while ufw is active. It starts the service and waits until the
+agent reports ready.
 
 Running it again upgrades in place: the configuration, keys and state are
-kept, so the enrollment flags are not needed. The host role requires
-PowerShell 7; without it nothing is changed.`
+kept, so the enrollment flags are not needed. The host role runs on Windows
+only and requires PowerShell 7; without it nothing is changed.`
 
 func newAgentInstallCommand(e env) *cobra.Command {
 	cmd := &cobra.Command{
@@ -82,9 +84,10 @@ func newAgentUninstallCommand(e env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove the agent's system service",
-		Long: "Stop and remove the service, its firewall rules, its Event Log source, its Hyper-V\n" +
-			"Administrators membership and the installed binary, run as Administrator. The\n" +
-			"configuration, keys and state stay unless --remove-state is given.",
+		Long: "Stop and remove the service, its firewall rules, the installed binary and, on Windows,\n" +
+			"its Event Log source and Hyper-V Administrators membership; run as Administrator\n" +
+			"(Windows) or root (Linux). The configuration, keys and state stay unless\n" +
+			"--remove-state is given.",
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			p, err := e.platform(e.clock())
