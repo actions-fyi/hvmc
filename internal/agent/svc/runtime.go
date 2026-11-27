@@ -18,9 +18,19 @@ type Agent interface {
 	Started() <-chan struct{}
 }
 
-// BuildFunc builds the agent; onTick goes into agent.Options.OnTick, so
-// the runtime notices a hung main loop.
-type BuildFunc func(onTick func()) (Agent, error)
+// Hooks connect the agent to the service manager: they go into
+// agent.Options.OnTick and OnReadyChange. Either may be nil.
+type Hooks struct {
+	// OnTick is called after every main-loop tick, so the runtime notices
+	// a hung loop.
+	OnTick func()
+	// OnReadyChange is called whenever the overall readiness changes
+	// (systemd's READY=1).
+	OnReadyChange func(ready bool)
+}
+
+// BuildFunc builds the agent with the runtime's hooks.
+type BuildFunc func(Hooks) (Agent, error)
 
 // watchdog notices a main loop that stopped ticking.
 type watchdog struct {

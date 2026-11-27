@@ -18,7 +18,7 @@ import (
 
 func TestServiceSpec(t *testing.T) {
 	defaults := agent.Paths{Config: `C:\ProgramData\hvmc\agent.yaml`, State: `C:\ProgramData\hvmc`}
-	s := serviceSpec(agent.RoleHost, `C:\Program Files\hvmc\hvmc.exe`, agent.Paths{Config: `c:\programdata\HVMC\agent.yaml`, State: `c:\programdata\hvmc`}, defaults)
+	s := serviceSpec(agent.RoleHost, `C:\Program Files\hvmc\hvmc.exe`, defaults, defaults)
 	want := ServiceSpec{
 		Name: "hvmc-agent", DisplayName: "Hyper-V Memory Coordinator Agent", Description: Description,
 		Binary: `C:\Program Files\hvmc\hvmc.exe`, Args: []string{"agent", "run"}, Account: `NT SERVICE\hvmc-agent`,
@@ -28,6 +28,11 @@ func TestServiceSpec(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, s); diff != "" {
 		t.Errorf("host spec (-want +got):\n%s", diff)
+	}
+	// Windows compares paths case-insensitively, Linux exactly.
+	lower := agent.Paths{Config: `c:\programdata\HVMC\agent.yaml`, State: `c:\programdata\hvmc`}
+	if args := serviceSpec(agent.RoleHost, "hvmc.exe", lower, defaults).Args; (len(args) == 2) != caseInsensitivePaths {
+		t.Errorf("other-case default paths: args %q (case-insensitive paths: %v)", args, caseInsensitivePaths)
 	}
 	g := serviceSpec(agent.RoleGuest, "hvmc.exe", agent.Paths{Config: filepath.Join("d", "a.yaml"), State: "s"}, defaults)
 	if len(g.Dependencies) != 0 || !cmp.Equal(g.Args, []string{"agent", "run", "--config", filepath.Join("d", "a.yaml"), "--state-dir", "s"}) {
@@ -47,7 +52,7 @@ func TestFirewallRules(t *testing.T) {
 	if len(rules) != 2 || rules[0].Port != 9443 || rules[1].Port != 9090 || len(rules[1].RemoteAddresses) != 4 {
 		t.Errorf("rules %+v", rules)
 	}
-	if got := firewallSummary(rules); !strings.Contains(got, "TCP 9443 and TCP 9090 from 192.0.2.10, 198.51.100.0/24") {
+	if got := firewallSummary(rules, "in the firewall"); !strings.Contains(got, "TCP 9443 and TCP 9090 from 192.0.2.10, 198.51.100.0/24") {
 		t.Errorf("summary %q", got)
 	}
 	for _, bad := range []string{"LocalSubnet", "any", "192.0.2.1; Remove-Item", "203.0.113.9-203.0.113.1", "192.0.2.1-2001:db8::1", ""} {

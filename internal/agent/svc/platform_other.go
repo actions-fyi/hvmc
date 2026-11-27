@@ -8,12 +8,17 @@ import (
 	"github.com/matfax/hvmc/internal/agent"
 )
 
+// caseInsensitivePaths is false: paths are case-sensitive.
+const caseInsensitivePaths = false
+
 // NewPlatform returns ErrUnsupported: only Windows has a service
 // integration so far.
 func NewPlatform(agent.Clock) (Platform, error) { return nil, ErrUnsupported }
 
-// IsService reports false: outside Windows the agent runs in the
-// foreground (systemd needs no handshake to start it).
+// LogsToStderr reports that the agent logs to stderr.
+const LogsToStderr = true
+
+// IsService reports false: the agent runs in the foreground.
 func IsService() (bool, error) { return false, nil }
 
 // RunService returns ErrUnsupported.

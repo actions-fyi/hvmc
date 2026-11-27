@@ -73,10 +73,11 @@ type plan struct {
 // the privileges and, for the host role, PowerShell 7. Then it enrolls (a
 // machine that is enrolled already keeps its configuration, keys and
 // state), asks the operator to confirm a host's first write policy, stops
-// a running service, installs the binary, registers the Event Log source,
-// creates or updates the service, adds a host's service account to Hyper-V
-// Administrators, writes the firewall rules, starts the service and waits
-// until the agent reports ready.
+// a running service, installs the binary, registers the Event Log source
+// (Windows), creates or updates the service, adds a host's service account
+// to Hyper-V Administrators (Windows), writes the firewall rules, starts the
+// service and waits until the agent reports ready. The platform's [Labels]
+// name these steps; a step without a label does not exist there.
 func Install(ctx context.Context, p Platform, o InstallOptions) error {
 	o.defaults()
 	pl, err := prepare(p, o)
@@ -157,15 +158,24 @@ func prepare(p Platform, o InstallOptions) (plan, error) {
 			return plan{}, err
 		}
 	}
+	return pl, checkMachine(p, o, pl.role)
+}
+
+// checkMachine checks the privileges, the service the platform is to
+// install and, for the host role, PowerShell 7.
+func checkMachine(p Platform, o InstallOptions, role agent.Role) error {
 	if err := p.CheckPrivileges(); err != nil {
-		return plan{}, err
+		return err
 	}
-	if pl.role == agent.RoleHost {
+	if err := p.CheckSpec(serviceSpec(role, p.BinaryPath(), o.Paths, o.Defaults)); err != nil {
+		return err
+	}
+	if role == agent.RoleHost {
 		if _, err := p.FindPwsh(); err != nil {
-			return plan{}, fmt.Errorf("refusing to install the host agent before anything is changed: %w", err)
+			return fmt.Errorf("refusing to install the host agent before anything is changed: %w", err)
 		}
 	}
-	return pl, nil
+	return nil
 }
 
 // installed reports whether the machine is enrolled. A machine with none
@@ -334,16 +344,20 @@ func configureMachine(ctx context.Context, p Platform, o InstallOptions, pl plan
 		}
 	}
 	spec := serviceSpec(pl.role, p.BinaryPath(), o.Paths, o.Defaults)
+	l := p.Describe()
 	steps := []step{
 		{"Installed " + p.BinaryPath(), func() error { return p.InstallBinary(o.Source) }},
-		{"Registered the Event Log source " + agent.EventSource, p.RegisterEventSource},
-		{"Configured service " + ServiceName + " (" + ServiceAccount + ", delayed automatic start)", func() error { return p.ConfigureService(spec) }},
+		{l.RegisterEventSource, p.RegisterEventSource},
+		{l.ConfigureService, func() error { return p.ConfigureService(spec) }},
 	}
 	if pl.role == agent.RoleHost {
-		steps = append(steps, step{"Added " + ServiceAccount + " to Hyper-V Administrators (" + HyperVAdminsSID + ")", p.AddHyperVAdmin})
+		steps = append(steps, step{l.AddHyperVAdmin, p.AddHyperVAdmin})
 	}
-	steps = append(steps, step{firewallSummary(rules), func() error { return p.SetFirewallRules(rules) }})
+	steps = append(steps, step{firewallSummary(rules, l.Firewall), func() error { return p.SetFirewallRules(rules) }})
 	for _, s := range steps {
+		if s.what == "" {
+			continue
+		}
 		if err := s.do(); err != nil {
 			return err
 		}
@@ -358,7 +372,7 @@ type step struct {
 	do   func() error
 }
 
-func firewallSummary(rules []FirewallRule) string {
+func firewallSummary(rules []FirewallRule, where string) string {
 	parts := make([]string, 0, len(rules))
 	for _, r := range rules {
 		parts = append(parts, fmt.Sprintf("TCP %d", r.Port))
@@ -367,7 +381,7 @@ func firewallSummary(rules []FirewallRule) string {
 	if len(rules) > 0 && len(rules[0].RemoteAddresses) > 0 {
 		from = strings.Join(rules[0].RemoteAddresses, ", ")
 	}
-	return "Allowed inbound " + strings.Join(parts, " and ") + " from " + from + " in the firewall"
+	return "Allowed inbound " + strings.Join(parts, " and ") + " from " + from + " " + where
 }
 
 // waitReady waits until the agent's /readyz reports ready and prints the
@@ -385,7 +399,7 @@ func waitReady(ctx context.Context, p Platform, o InstallOptions, cfg agent.Conf
 			return false, err
 		}
 		if state == Stopped {
-			return false, fmt.Errorf("service %s stopped while starting (see the Event Log, source %s)", ServiceName, agent.EventSource)
+			return false, fmt.Errorf("service %s stopped while starting (see %s)", ServiceName, p.Describe().Logs)
 		}
 		report, ready, err := readiness(ctx, o.HTTP, url)
 		if err != nil {

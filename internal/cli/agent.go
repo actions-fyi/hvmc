@@ -124,7 +124,8 @@ func newAgentRunCommand() *cobra.Command {
 }
 
 // runAgent runs the agent in the foreground until SIGINT or SIGTERM, or,
-// when the Windows Service Control Manager started it, as the service.
+// when the service manager (the Windows Service Control Manager, systemd)
+// started it, as the service.
 func runAgent(cmd *cobra.Command, _ []string) error {
 	paths := agentPaths(cmd)
 	isService, err := svc.IsService()
@@ -132,7 +133,7 @@ func runAgent(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	stderr := cmd.ErrOrStderr()
-	if isService {
+	if isService && !svc.LogsToStderr {
 		stderr = nil // no console: the Event Log and the log file
 	}
 	log, closeLog, err := agent.NewLogger(agent.LogOptions{Stderr: stderr, Dir: paths.Logs})
@@ -141,7 +142,7 @@ func runAgent(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = closeLog() }()
 	clk := agent.SystemClock()
-	build := func(onTick func()) (svc.Agent, error) {
+	build := func(hooks svc.Hooks) (svc.Agent, error) {
 		cfg, err := agent.LoadConfig(paths.Config)
 		if err != nil {
 			return nil, err
@@ -151,13 +152,14 @@ func runAgent(cmd *cobra.Command, _ []string) error {
 			return nil, fmt.Errorf("%s: role %s: %w", cmd.CommandPath(), cfg.Role, ErrNotImplemented)
 		}
 		return agent.New(agent.Options{
-			Config: cfg, Paths: paths, Service: newService(), Clock: clk, Logger: log, Version: version.String(), OnTick: onTick,
+			Config: cfg, Paths: paths, Service: newService(), Clock: clk, Logger: log, Version: version.String(),
+			OnTick: hooks.OnTick, OnReadyChange: hooks.OnReadyChange,
 		})
 	}
 	if isService {
 		return svc.RunService(log, clk, build)
 	}
-	a, err := build(nil)
+	a, err := build(svc.Hooks{})
 	if err != nil {
 		return err
 	}

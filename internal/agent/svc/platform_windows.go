@@ -41,6 +41,9 @@ type winPlatform struct {
 	clk agent.Clock
 }
 
+// caseInsensitivePaths is true: Windows compares paths case-insensitively.
+const caseInsensitivePaths = true
+
 // NewPlatform returns the platform's service integration.
 func NewPlatform(clk agent.Clock) (Platform, error) {
 	if clk == nil {
@@ -48,6 +51,12 @@ func NewPlatform(clk agent.Clock) (Platform, error) {
 	}
 	return &winPlatform{clk: clk}, nil
 }
+
+// Describe names the Windows service's steps.
+func (*winPlatform) Describe() Labels { return windowsLabels() }
+
+// CheckSpec accepts every service: SCM takes any binary and arguments.
+func (*winPlatform) CheckSpec(ServiceSpec) error { return nil }
 
 func (*winPlatform) CheckPrivileges() error {
 	if !windows.GetCurrentProcessToken().IsElevated() {

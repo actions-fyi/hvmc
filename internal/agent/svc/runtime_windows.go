@@ -23,6 +23,11 @@ const exitFailure = 1
 // preshutdown all drain the agent (DESIGN §4.5).
 const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown
 
+// LogsToStderr reports that the agent does not log to stderr under the
+// Service Control Manager, which gives it no console: it logs to the Event
+// Log and the log file.
+const LogsToStderr = false
+
 // IsService reports whether the Service Control Manager started this
 // process.
 func IsService() (bool, error) { return svc.IsWindowsService() }
@@ -52,7 +57,7 @@ type handler struct {
 func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, status chan<- svc.Status) (bool, uint32) {
 	status <- svc.Status{State: svc.StartPending, WaitHint: 30_000}
 	wd := newWatchdog(h.clk, WatchdogTimeout)
-	a, err := h.build(wd.Tick)
+	a, err := h.build(Hooks{OnTick: wd.Tick})
 	if err != nil {
 		h.fail(err)
 		return true, exitFailure

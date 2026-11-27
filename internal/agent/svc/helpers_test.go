@@ -133,6 +133,8 @@ type fakePlatform struct {
 	failOn  map[string]error
 	privErr error
 	pwshErr error
+	specErr error
+	labels  *Labels
 	// stopOnStart makes the started service stop at once (a crash).
 	stopOnStart bool
 
@@ -165,6 +167,16 @@ func (f *fakePlatform) setState(s State) {
 }
 
 func (f *fakePlatform) CheckPrivileges() error { return f.privErr }
+
+// Describe returns the Windows labels unless labels is set.
+func (f *fakePlatform) Describe() Labels {
+	if f.labels != nil {
+		return *f.labels
+	}
+	return windowsLabels()
+}
+
+func (f *fakePlatform) CheckSpec(ServiceSpec) error { return f.specErr }
 
 func (f *fakePlatform) FindPwsh() (string, error) {
 	if f.pwshErr != nil {

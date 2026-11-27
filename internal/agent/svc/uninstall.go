@@ -39,13 +39,14 @@ func Uninstall(ctx context.Context, p Platform, o UninstallOptions) error {
 		return err
 	}
 	out := &printer{w: o.Out}
+	l := p.Describe()
 	steps := []step{
 		{"Stopped the service", func() error { return stopIfRunning(ctx, p) }},
 		// While the service still exists, so its account resolves.
-		{"Removed " + ServiceAccount + " from Hyper-V Administrators", p.RemoveHyperVAdmin},
-		{"Removed the firewall rules (group " + FirewallGroup + ")", p.RemoveFirewallRules},
-		{"Removed service " + ServiceName, func() error { return p.RemoveService(ctx) }},
-		{"Removed the Event Log source " + agent.EventSource, p.RemoveEventSource},
+		{l.RemoveHyperVAdmin, p.RemoveHyperVAdmin},
+		{l.RemoveFirewallRules, p.RemoveFirewallRules},
+		{l.RemoveService, func() error { return p.RemoveService(ctx) }},
+		{l.RemoveEventSource, p.RemoveEventSource},
 		{"Removed " + p.BinaryPath(), func() error { return removeBinary(p, out) }},
 	}
 	if o.RemoveState {
@@ -53,6 +54,9 @@ func Uninstall(ctx context.Context, p Platform, o UninstallOptions) error {
 	}
 	var errs []error
 	for _, s := range steps {
+		if s.what == "" {
+			continue
+		}
 		if err := s.do(); err != nil {
 			errs = append(errs, err)
 			out.f("Failed: %s: %v\n", strings.ToLower(s.what[:1])+s.what[1:], err)
@@ -145,8 +149,21 @@ func ownFile(file string, names []string) bool {
 const logFile = "agent.log"
 
 // removeEmptyDir removes dir if it is empty; a directory that still holds
-// files is an error that names it, a missing one is not.
+// files is an error that names it, a missing one is not. A symbolic link
+// to a directory is removed with the directory it points to: systemd's
+// DynamicUser= keeps the state in /var/lib/private/hvmc and links
+// /var/lib/hvmc to it.
 func removeEmptyDir(dir string) error {
+	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return err
+		}
+		if err := removeEmptyDir(target); err != nil {
+			return err
+		}
+		return os.Remove(dir)
+	}
 	entries, err := os.ReadDir(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

@@ -1,12 +1,13 @@
 // Package svc integrates the hvmc agent with the platform's service manager
 // (DESIGN §4.5, §4.8): `hvmc agent install`, `uninstall` and `status`, and
-// running `hvmc agent run` under the Windows Service Control Manager.
+// running `hvmc agent run` under the Windows Service Control Manager or
+// systemd.
 //
 // The orchestration (argument checks, the order of the steps, the policy
 // confirmation, plan and status output) is portable and drives a
-// [Platform], which does the machine-specific work. Only Windows has a
-// Platform so far ([NewPlatform]); the systemd integration is separate
-// work.
+// [Platform], which does the machine-specific work and names its steps
+// ([Labels]). [NewPlatform] returns the Windows service integration or the
+// systemd one (Linux); elsewhere there is none.
 package svc
 
 import (
@@ -96,12 +97,49 @@ type FirewallRule struct {
 	RemoteAddresses []string `json:"remoteAddresses,omitempty"`
 }
 
+// Labels name a platform's steps in the output of install and uninstall.
+// An empty label skips its step: the platform method is not called.
+type Labels struct {
+	// RegisterEventSource and RemoveEventSource are the Event Log source's
+	// steps.
+	RegisterEventSource, RemoveEventSource string
+	// ConfigureService and RemoveService are the service's steps.
+	ConfigureService, RemoveService string
+	// AddHyperVAdmin and RemoveHyperVAdmin are the host's group membership.
+	AddHyperVAdmin, RemoveHyperVAdmin string
+	// Firewall ends the summary of the rules install writes ("in the
+	// firewall"); RemoveFirewallRules is uninstall's step.
+	Firewall, RemoveFirewallRules string
+	// Logs is where the service's log is, for a start that fails.
+	Logs string
+}
+
+// windowsLabels are the Windows service's steps.
+func windowsLabels() Labels {
+	return Labels{
+		RegisterEventSource: "Registered the Event Log source " + agent.EventSource,
+		RemoveEventSource:   "Removed the Event Log source " + agent.EventSource,
+		ConfigureService:    "Configured service " + ServiceName + " (" + ServiceAccount + ", delayed automatic start)",
+		RemoveService:       "Removed service " + ServiceName,
+		AddHyperVAdmin:      "Added " + ServiceAccount + " to Hyper-V Administrators (" + HyperVAdminsSID + ")",
+		RemoveHyperVAdmin:   "Removed " + ServiceAccount + " from Hyper-V Administrators",
+		Firewall:            "in the firewall",
+		RemoveFirewallRules: "Removed the firewall rules (group " + FirewallGroup + ")",
+		Logs:                "the Event Log, source " + agent.EventSource,
+	}
+}
+
 // Platform does the machine-specific work of install and uninstall. Every
 // method is idempotent: it succeeds when the machine is already in the
 // requested state.
 type Platform interface {
+	// Describe names the platform's steps.
+	Describe() Labels
 	// CheckPrivileges fails unless the process may install services.
 	CheckPrivileges() error
+	// CheckSpec fails for a service the platform cannot install, before
+	// install changes anything.
+	CheckSpec(spec ServiceSpec) error
 	// FindPwsh returns PowerShell 7's absolute path (host prerequisite).
 	FindPwsh() (string, error)
 	// BinaryPath is where the binary is installed.
@@ -163,9 +201,14 @@ func serviceSpec(role agent.Role, binary string, paths, defaults agent.Paths) Se
 	}
 }
 
-// samePath compares paths as Windows does: cleaned and case-insensitive.
+// samePath compares cleaned paths as the platform does: case-insensitive
+// on Windows ([caseInsensitivePaths]), exactly elsewhere.
 func samePath(a, b string) bool {
-	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if caseInsensitivePaths {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // firewallRules returns the rules for the gRPC and health ports of c,
