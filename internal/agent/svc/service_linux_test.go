@@ -51,6 +51,13 @@ func TestServiceRoundTrip(t *testing.T) {
 			t.Errorf("cleanup: %v", err)
 		}
 	})
+	// Registered after the uninstall, so it runs before it: on a failure
+	// the agent's journal and unit state are still there to print.
+	t.Cleanup(func() {
+		if t.Failed() {
+			logDiagnostics(t)
+		}
+	})
 	ufwBefore := ufwRules(t, p)
 	ep := newEnrollEndpoint(t, 9443, 9090)
 	o := InstallOptions{
@@ -129,6 +136,18 @@ func checkUninstall(t *testing.T, p *linuxPlatform, paths agent.Paths, ufwBefore
 		if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("%s: %v, want removed", dir, err)
 		}
+	}
+}
+
+// logDiagnostics prints the unit's state and the agent's journal.
+func logDiagnostics(t *testing.T) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"systemctl", "status", "--no-pager", "--full", UnitName},
+		{"journalctl", "-u", UnitName, "--no-pager", "-o", "short-precise", "-n", "300"},
+	} {
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		t.Logf("$ %s (%v)\n%s", strings.Join(args, " "), err, out)
 	}
 }
 
