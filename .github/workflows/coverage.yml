@@ -35,4 +35,4 @@ jobs:
       pull-requests: read # Find the pull request of the run
       code-quality: write # Upload the coverage reports to GitHub Code Quality
       id-token: write # Exchange the job's OIDC token with DeepSource
-    uses: actions-fyi/shared-workflows/.github/workflows/_coverage.yml@v4.3.0
+    uses: actions-fyi/shared-workflows/.github/workflows/_coverage.yml@v4.4.0
