@@ -119,7 +119,7 @@ Anything not listed here needs a reason in the PR that adds it. Prefer the stand
 | Readiness and watchdog (`READY=1`, `WATCHDOG=1`) | `github.com/coreos/go-systemd/v22/daemon` |
 | Unit install, enable, start, daemon-reload | `github.com/coreos/go-systemd/v22/dbus` (typed errors instead of parsing `systemctl` output) |
 | `/proc/meminfo` | stdlib parsing (two fields) |
-| `ufw` rules (only if active) | `os/exec` |
+| `ufw` rules (only if active) | `os/exec` of `/usr/sbin/ufw` with a fixed argv and `LC_ALL=C`, no shell; rules carry the comment `hvmc-agent` (§4.5) |
 | Logging | stdlib `log/slog` to stderr (captured by journald) |
 
 **Testing**
@@ -307,9 +307,14 @@ Windows (the Hyper-V host and Windows guests):
 - Implements SCM stop/shutdown/preshutdown cleanly (drains in-flight requests up to 20 s) via `golang.org/x/sys/windows/svc`; reports `SERVICE_RUNNING` only once the agent listens. Under SCM the agent logs to the Event Log and the log file only.
 
 Linux (systemd-based distributions; CI tests on Ubuntu LTS):
-- Binary `/usr/local/bin/hvmc`, config `/etc/hvmc/agent.yaml`, keys in `/var/lib/hvmc/` (`ConfigurationDirectory=`, `StateDirectory=`).
-- Unit `/etc/systemd/system/hvmc-agent.service`: `Type=notify` (READY=1 after readiness checks pass), `WatchdogSec=30s` (WATCHDOG=1 from the main loop), `Restart=on-failure`, `RestartSec=5s`, `DynamicUser=yes`, `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service`, `MemoryDenyWriteExecute=yes`; `systemctl enable --now`.
-- Logs to journald (`journalctl -u hvmc-agent`). If `ufw` is active, adds allow rules for the two ports; otherwise touches no firewall.
+- Binary `/usr/local/bin/hvmc`, config `/etc/hvmc/agent.yaml`, keys in `/var/lib/hvmc/` (`ConfigurationDirectory=`, `StateDirectory=`). Only these default paths: the unit's sandbox covers nothing else, so `install` refuses `--config` and `--state-dir` before it changes anything.
+- Linux agents are guests: the host role manages Hyper-V and exists on Windows only, so `install --role host` is refused before anything is changed.
+- File modes: the service runs as a dynamic user (`DynamicUser=yes`) that owns no file outside its state directory, so `agent.yaml` is root:root `0644` in `/etc/hvmc` (`0755`): the service reads it and cannot change it, as on Windows. It holds no secret (the agent's name, role, ports, allowed client CNs and firewall sources; a guest has no policy). The state directory is `0700` (`StateDirectoryMode=`) and the keys `0600`; systemd moves the directory to `/var/lib/private/hvmc`, links `/var/lib/hvmc` to it and gives it to the dynamic user at every start. `uninstall --remove-state` removes the link and the directory, under the rules above.
+- Unit `/etc/systemd/system/hvmc-agent.service`, rendered from a fixed template (`internal/agent/svc/unit.tmpl`) whose values are constants of the binary; no argument reaches it: `Type=notify` (READY=1 after readiness checks pass), `NotifyAccess=main`, `WatchdogSec=30s` (WATCHDOG=1 from the main loop), `Restart=on-failure`, `RestartSec=5s`, `TimeoutStopSec=30s` (the drain plus a margin), `DynamicUser=yes`, `ConfigurationDirectory=hvmc`, `StateDirectory=hvmc`, `StateDirectoryMode=0700`, `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service`, `MemoryDenyWriteExecute=yes`, `WantedBy=multi-user.target`.
+- systemd is driven through its D-Bus API (`go-systemd/dbus`): `install` writes the unit, reloads (`daemon-reload`), enables it and starts it; the start job completes only at READY=1, then `install` waits for `/readyz` as on Windows. An upgrade stops the unit first. `uninstall` stops and disables the unit, removes the file and reloads.
+- Under systemd (`NOTIFY_SOCKET` set) `hvmc agent run` sends READY=1 the first time the readiness checks pass, `STATUS=` on every change of readiness, WATCHDOG=1 on every main-loop tick once the agent serves (so a slow start is not a hang), and STOPPING=1 on SIGTERM before the 20 s drain. A failure exits non-zero, which `Restart=on-failure` restarts.
+- Logs to journald (`journalctl -u hvmc-agent`).
+- Firewall: if `ufw` is active, `install` adds one inbound allow rule per port and source: `ufw allow proto tcp [from <prefix>] to any port <port> comment hvmc-agent`, run as `/usr/sbin/ufw` with a fixed argv and `LC_ALL=C`, never through a shell. Every value is a port or an address prefix formatted by the agent; an `a-b` range of `firewall.remoteAddresses`, which ufw does not know, becomes the fewest prefixes that cover it, and more than 64 rules are refused. A re-install replaces the agent's rules, which it finds by their comment in `ufw show added`; `uninstall` removes them whether ufw is active or not. If `ufw` is inactive or missing, `install` touches no firewall.
 - Stops cleanly on SIGTERM (same 20 s drain).
 
 ### 4.6 Identity: internal CA, enrollment, rotation
@@ -559,7 +564,7 @@ Values (defaults in brackets): `image.repository/tag`, `replicas` [2], `crds.kee
 - `ci.yaml` on PR/push:
   - Linux: `golangci-lint`, `buf lint` + `buf breaking` against the default branch, `go test ./... -race` (ledger ≥ 95 % coverage gate), envtest for controllers (`setup-envtest`), `helm lint` + golden tests + `ct lint` + `ct install` on kind (§11), `ko build --push=false` (linux/amd64), `GOOS=windows go build` of the agent.
   - Windows (`windows-2025` runner): `go test ./internal/agent/...` including the pwsh-worker protocol tests against a mock Hyper-V module (PowerShell functions named `Get-VM`/`Set-VMMemory` with scripted behaviour: grow, refused shrink, VMMS down, hang), and SCM install/upgrade/uninstall round-trip.
-  - Linux agent service (`ubuntu-latest` runner, real systemd): install/upgrade/uninstall round-trip, `Type=notify` readiness, watchdog restart of a deliberately hung agent.
+  - Linux agent service (the Linux runner, real systemd, as root): install/upgrade/uninstall round-trip, `Type=notify` readiness, watchdog restart of a deliberately hung agent. The hang (and a held-back READY=1) come from hooks compiled only into a test build of `hvmc` (tag `servicetesthooks`) and switched on by a drop-in of the test; no flag or variable of a release binary can hang it.
 - `release.yaml` on tag `v*` (set up for the first release): `ko build --platform=linux/amd64` → Docker Hub, agent archives (`linux_amd64.tar.gz`, `windows_amd64.zip`) + checksums, cosign keyless signing of the image and the archives, GitHub Release with GitHub's auto-generated notes.
 - **DEFERRED**: Helm release workflow (`helm package --version ${TAG#v} --app-version ${TAG#v}`, `helm push` to `oci://ghcr.io/matfax/charts`, chart signing) and the changelog tool choice.
 - Dependabot for Go modules and Actions; Actions pinned by SHA.
