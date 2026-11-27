@@ -83,12 +83,64 @@ func (u ufw) set(ctx context.Context, rules []FirewallRule) error {
 	if err := u.remove(ctx); err != nil {
 		return err
 	}
+	out, err := u.run(ctx, u.path, "show", "added")
+	if err != nil {
+		return err
+	}
+	theirs := otherUFWRules(string(out))
 	for _, args := range add {
+		// ufw matches rules without their comment: adding a rule the
+		// operator already has would put the agent's comment on it, and
+		// uninstall would then delete the operator's rule. The rule
+		// allows the same traffic, so it is left to the operator.
+		if theirs[ufwShown(args)] {
+			continue
+		}
 		if _, err := u.run(ctx, u.path, args...); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ufwShown is how `ufw show added` prints the rule that args (from
+// ufwRuleArgs, without `comment …`) add.
+func ufwShown(args []string) string {
+	var from, port string
+	for i := 0; i+1 < len(args); i++ {
+		switch args[i] {
+		case "from":
+			from = args[i+1]
+		case "port":
+			port = args[i+1]
+		}
+	}
+	if from == "" {
+		return "allow " + port + "/tcp"
+	}
+	// ufw prints a single host without its /32 or /128.
+	if p, err := netip.ParsePrefix(from); err == nil && p.IsSingleIP() {
+		from = p.Addr().String()
+	}
+	return "allow from " + from + " to any port " + port + " proto tcp"
+}
+
+// otherUFWRules returns the rules of `ufw show added` that are not the
+// agent's, as ufw prints them without a comment.
+func otherUFWRules(out string) map[string]bool {
+	rules := map[string]bool{}
+	for line := range strings.Lines(out) {
+		words, ok := strings.CutPrefix(strings.TrimSpace(line), "ufw ")
+		if !ok {
+			continue
+		}
+		spec, comment, hasComment := strings.Cut(words, " comment ")
+		if hasComment && strings.Trim(comment, "'") == ufwComment {
+			continue
+		}
+		rules[strings.Join(strings.Fields(spec), " ")] = true
+	}
+	return rules
 }
 
 // remove deletes every rule with the agent's comment.
