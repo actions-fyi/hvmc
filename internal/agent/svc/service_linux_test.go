@@ -392,9 +392,11 @@ func checkWatchdog(t *testing.T, p *linuxPlatform) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("journalctl", "-u", UnitName, "--no-pager", "-o", "cat", "-n", "200").CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "Watchdog timeout") {
-		t.Errorf("journal shows no watchdog timeout (%v):\n%s", err, out)
+	// systemd's own messages about the unit (_PID=1), not the agent's
+	// goroutine dump after the SIGABRT, which runs to hundreds of lines.
+	out, err := exec.Command("journalctl", "-u", UnitName, "_PID=1", "--no-pager", "-o", "cat").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "Failed with result 'watchdog'") {
+		t.Errorf("journal shows no watchdog failure (%v):\n%s", err, out)
 	}
 	setDropIn(t, p, "", true)
 	if state, _, err := p.ServiceState(); err != nil || state != Running {
