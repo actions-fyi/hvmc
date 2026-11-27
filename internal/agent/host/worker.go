@@ -208,6 +208,14 @@ func resolvePwsh(goos string, getenv func(string) string, exists func(string) bo
 	return p, nil
 }
 
+// FindPwsh returns the absolute path of PowerShell 7 as the agent resolves
+// it (DESIGN §4.2), or an error wrapping ErrNoPwsh that says where it
+// looked. `hvmc agent install --role host` checks it before changing
+// anything (DESIGN §4.5).
+func FindPwsh() (string, error) {
+	return resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
+}
+
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
@@ -234,7 +242,7 @@ func PwshStarter(stderr io.Writer) Starter {
 	return func(context.Context) (Process, error) {
 		mu.Lock()
 		if path == "" {
-			p, err := resolvePwsh(runtime.GOOS, os.Getenv, fileExists, exec.LookPath)
+			p, err := FindPwsh()
 			if err != nil {
 				mu.Unlock()
 				return nil, err

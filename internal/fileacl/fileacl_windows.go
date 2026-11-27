@@ -3,10 +3,44 @@
 package fileacl
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// MkdirSecure creates the state directory at path with the protected DACL
+// of [SecureDir] in the same call (CreateDirectory with a security
+// descriptor), so it never exists, even briefly, with the ACL inherited
+// from its parent. Missing parents are created with their inherited ACL;
+// they hold nothing. An existing directory gets the DACL as by SecureDir.
+func MkdirSecure(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	sd, err := windows.SecurityDescriptorFromString(dirSDDL(ServiceSID(ServiceName)))
+	if err != nil {
+		return fmt.Errorf("parse security descriptor: %w", err)
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(*sa))
+	err = windows.CreateDirectory(p, sa)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, windows.ERROR_ALREADY_EXISTS):
+		return SecureDir(path)
+	default:
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+}
 
 // SecureDir sets the protected DACL of the state directory on path. The
 // inheritable entries propagate to what the directory already holds, so
