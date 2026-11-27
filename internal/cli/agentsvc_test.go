@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,16 +57,22 @@ func TestAgentInstallUsage(t *testing.T) {
 	}
 }
 
-// TestAgentInstallChecksPrivileges: with valid flags, install checks the
-// privileges before it changes anything.
-func TestAgentInstallChecksPrivileges(t *testing.T) {
-	dir := t.TempDir()
-	p := &stubPlatform{}
-	code, _, errOut := runCLIEnv(t, stubEnv(p), "agent", "install", "--role", "guest", "--agent", "vm-1",
-		"--enroll", "https://hvmc.example.com/v1/enroll", "--token", "t",
-		"--ca-sha256", strings.Repeat("ab", 32), "--config", filepath.Join(dir, "agent.yaml"), "--state-dir", dir)
-	if code != ExitFailure || !strings.Contains(errOut, "Administrator") || !slices.Equal(p.calls, []string{"CheckPrivileges"}) {
-		t.Errorf("exit %d, stderr %q, calls %v", code, errOut, p.calls)
+// TestAgentInstallRoles: both roles have an agent, so install passes the
+// role check and reaches the platform (refused here at the privilege
+// check, before anything is changed); a role without one is refused.
+func TestAgentInstallRoles(t *testing.T) {
+	for _, role := range []string{"host", "guest"} {
+		dir := t.TempDir()
+		p := &stubPlatform{}
+		code, _, errOut := runCLIEnv(t, stubEnv(p), "agent", "install", "--role", role, "--agent", "vm-1",
+			"--enroll", "https://hvmc.example.com/v1/enroll", "--token", "t",
+			"--ca-sha256", strings.Repeat("ab", 32), "--config", filepath.Join(dir, "agent.yaml"), "--state-dir", dir)
+		if code != ExitFailure || !strings.Contains(errOut, "Administrator") || len(p.calls) != 1 || p.calls[0] != "CheckPrivileges" {
+			t.Errorf("%s: exit %d, stderr %q, calls %v", role, code, errOut, p.calls)
+		}
+	}
+	if err := canRun("coordinator"); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("canRun(coordinator) = %v, want ErrNotImplemented", err)
 	}
 }
 
