@@ -96,3 +96,30 @@ func checkDACL(t *testing.T, path, prefix, service string) {
 		}
 	}
 }
+
+func TestMkdirSecure(t *testing.T) {
+	sid := ServiceSID(ServiceName)
+	dir := filepath.Join(t.TempDir(), "parent", "hvmc")
+	restoreAccess(t, dir)
+	if err := MkdirSecure(dir); err != nil {
+		t.Fatalf("MkdirSecure() = %v", err)
+	}
+	// Created with the protected DACL, not the parent's.
+	checkDACL(t, dir, "D:P", "(A;OICI;"+modifyAccess+";;;"+sid+")")
+	f := filepath.Join(dir, "serving.pem")
+	if err := os.WriteFile(f, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkDACL(t, f, "", "(A;ID;"+modifyAccess+";;;"+sid+")")
+
+	// An existing directory with the inherited ACL is secured.
+	existing := filepath.Join(t.TempDir(), "hvmc")
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreAccess(t, existing)
+	if err := MkdirSecure(existing); err != nil {
+		t.Fatalf("MkdirSecure(existing) = %v", err)
+	}
+	checkDACL(t, existing, "D:P", ";"+sid+")")
+}

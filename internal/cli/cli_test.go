@@ -36,7 +36,6 @@ func runCLIEnv(t *testing.T, e env, args ...string) (code int, stdout, stderr st
 func TestStubs(t *testing.T) {
 	for _, path := range []string{
 		"serve",
-		"agent install", "agent uninstall", "agent status",
 		"check",
 		"test run", "test list", "test logs",
 	} {
@@ -52,14 +51,6 @@ func TestStubs(t *testing.T) {
 				t.Errorf("stderr = %q, want %q", errOut, want)
 			}
 		})
-	}
-}
-
-func TestStubFlags(t *testing.T) {
-	code, _, errOut := runCLI(t, "agent", "install", "--role", "host", "--enroll", "https://hvmc.example.com/v1/enroll",
-		"--token", "t", "--ca-sha256", "00")
-	if code != ExitFailure || !strings.Contains(errOut, "not implemented yet") {
-		t.Errorf("agent install with flags: code %d, stderr %q", code, errOut)
 	}
 }
 

@@ -24,3 +24,12 @@ make helm-lint  # helm lint + golden tests of charts/hvmc (make helm-golden rewr
 make ct-lint    # chart-testing lint; needs python3 for yamllint and yamale
 make build      # bin/hvmc
 ```
+
+The Windows service round trip (`internal/agent/svc`) installs, upgrades and removes the real
+`hvmc-agent` service, so it is built only with the `servicetest` tag and runs in its own step of
+the Windows CI job. To run it yourself, use a disposable Windows machine without hvmc and an
+elevated prompt; it fails, rather than skips, when it is not elevated or hvmc is already there:
+
+```powershell
+go test -tags servicetest -run '^TestServiceRoundTrip$' -count=1 -v ./internal/agent/svc/
+```
