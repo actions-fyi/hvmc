@@ -52,11 +52,17 @@ func runNotify(ctx context.Context, log *slog.Logger, build BuildFunc, notify fu
 	if err != nil {
 		return err
 	}
-	stopNotify := context.AfterFunc(ctx, func() {
-		log.Info("stop requested; draining", "timeout", agent.DrainTimeout)
-		n.send(daemon.SdNotifyStopping)
-	})
-	defer stopNotify()
+	// STOPPING=1 goes out as soon as the stop is requested, while the
+	// agent drains, and at the latest when Run returns after the stop:
+	// Run may see the cancelled context before the AfterFunc runs.
+	var stopping sync.Once
+	stoppingNow := func() {
+		stopping.Do(func() {
+			log.Info("stop requested; draining", "timeout", agent.DrainTimeout)
+			n.send(daemon.SdNotifyStopping)
+		})
+	}
+	context.AfterFunc(ctx, stoppingNow)
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 	select {
@@ -64,10 +70,13 @@ func runNotify(ctx context.Context, log *slog.Logger, build BuildFunc, notify fu
 		// The watchdog counts from the start of serving: a slow start is
 		// not a hung loop.
 		n.arm()
-	case err := <-done:
-		return err
+		err = <-done
+	case err = <-done:
 	}
-	return <-done
+	if ctx.Err() != nil {
+		stoppingNow()
+	}
+	return err
 }
 
 // notifier turns the agent's hooks into sd_notify messages.
