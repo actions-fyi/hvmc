@@ -30,6 +30,10 @@ allow:
   - registry.npmjs.org # renovate-config-validator, Wrangler, and Claude Code through bun
   - pypi.org # zizmor's install
   - files.pythonhosted.org # zizmor's install
+  # Go: modules and toolchains (go.mod's toolchain line) for CI and CodeQL's Go autobuild; from the
+  # repositories' Go configuration, not Harden-Runner's records
+  - proxy.golang.org # module proxy, toolchains included
+  - sum.golang.org # checksum database
   # Claude: the review, triage, metadata, explain and screen jobs
   - claude.ai # Claude Code's installer
   - downloads.claude.ai # Claude Code's binary
