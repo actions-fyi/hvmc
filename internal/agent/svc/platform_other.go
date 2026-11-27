@@ -8,6 +8,10 @@ import (
 	"github.com/matfax/hvmc/internal/agent"
 )
 
+// CheckEnroll allows `hvmc agent enroll`: only the systemd unit's dynamic
+// user needs install to write its state.
+func CheckEnroll() error { return nil }
+
 // caseInsensitivePaths is false: paths are case-sensitive.
 const caseInsensitivePaths = false
 

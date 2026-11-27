@@ -101,6 +101,27 @@ type systemd interface {
 	Close()
 }
 
+// CheckEnroll refuses `hvmc agent enroll` while the unit is installed: the
+// service's state directory belongs to its dynamic user, which systemd
+// does not hand files written by root later, so a re-enrollment would
+// leave keys the agent cannot read. Re-enrolling an installed machine
+// goes through `hvmc agent install` (an upgrade keeps the enrollment) or
+// uninstall with --remove-state and install again.
+func CheckEnroll() error { return checkEnroll(UnitPath) }
+
+func checkEnroll(unitPath string) error {
+	_, err := os.Stat(unitPath)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%w: %s exists; use `hvmc agent install` to upgrade, or `hvmc agent uninstall --remove-state` "+
+			"and `hvmc agent install` with the enrollment flags to enroll again", ErrServiceInstalled, unitPath)
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	default:
+		return err
+	}
+}
+
 // linuxPlatform implements Platform with systemd and ufw.
 type linuxPlatform struct {
 	clk agent.Clock

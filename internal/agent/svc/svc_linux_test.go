@@ -355,3 +355,16 @@ func dynamicUserState(t *testing.T, foreign bool) (agent.Paths, string) {
 	}
 	return agent.Paths{Config: filepath.Join(root, "etc", "agent.yaml"), State: state}, private
 }
+
+func TestCheckEnroll(t *testing.T) {
+	unit := filepath.Join(t.TempDir(), UnitName)
+	if err := checkEnroll(unit); err != nil {
+		t.Errorf("no unit: %v", err)
+	}
+	if err := os.WriteFile(unit, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkEnroll(unit); !errors.Is(err, ErrServiceInstalled) || !strings.Contains(err.Error(), "hvmc agent install") {
+		t.Errorf("installed unit: %v", err)
+	}
+}

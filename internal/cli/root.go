@@ -55,6 +55,9 @@ type env struct {
 	// newPlatform is the service integration (hvmc agent install,
 	// uninstall, status); nil means svc.NewPlatform.
 	newPlatform func(agent.Clock) (svc.Platform, error)
+	// checkEnroll may refuse `hvmc agent enroll`; nil means
+	// svc.CheckEnroll.
+	checkEnroll func() error
 }
 
 func defaultEnv() env { return env{now: time.Now} }
@@ -65,6 +68,13 @@ func (e env) clock() agent.Clock {
 		return agent.SystemClock()
 	}
 	return envClock{Clock: agent.SystemClock(), now: e.now}
+}
+
+func (e env) enrollAllowed() error {
+	if e.checkEnroll != nil {
+		return e.checkEnroll()
+	}
+	return svc.CheckEnroll()
 }
 
 func (e env) platform(clk agent.Clock) (svc.Platform, error) {

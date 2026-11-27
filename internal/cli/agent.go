@@ -80,6 +80,9 @@ func runAgentEnroll(cmd *cobra.Command, e env) error {
 	if o.Role != agent.RoleHost && o.Role != agent.RoleGuest {
 		return usageErrorf("--role must be %s or %s, got %q", agent.RoleHost, agent.RoleGuest, role)
 	}
+	if err := e.enrollAllowed(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), time.Minute)
 	defer cancel()
 	en, err := agent.Enroll(ctx, o)

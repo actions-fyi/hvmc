@@ -41,6 +41,10 @@ type winPlatform struct {
 	clk agent.Clock
 }
 
+// CheckEnroll allows `hvmc agent enroll`: only the systemd unit's dynamic
+// user needs install to write its state.
+func CheckEnroll() error { return nil }
+
 // caseInsensitivePaths is true: Windows compares paths case-insensitively.
 const caseInsensitivePaths = true
 

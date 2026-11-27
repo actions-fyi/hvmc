@@ -174,6 +174,10 @@ type Platform interface {
 	RemoveFirewallRules() error
 }
 
+// ErrServiceInstalled refuses `hvmc agent enroll` where the installed
+// service needs `hvmc agent install` to write its state (systemd).
+var ErrServiceInstalled = errors.New("the agent service is installed")
+
 // ErrUnsupported is returned by NewPlatform where no service integration
 // exists yet.
 var ErrUnsupported = errors.New("service integration is not available on this platform")

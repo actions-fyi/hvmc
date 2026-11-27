@@ -199,6 +199,9 @@ func checkInstalled(t *testing.T, p *linuxPlatform, paths agent.Paths) uint32 {
 	if err != nil || state != Running || pid == 0 {
 		t.Fatalf("service: %s, pid %d, %v; want running", state, pid, err)
 	}
+	if err := CheckEnroll(); !errors.Is(err, ErrServiceInstalled) {
+		t.Errorf("hvmc agent enroll with the unit installed: %v, want ErrServiceInstalled", err)
+	}
 	props := unitProps(t, p)
 	if props["UnitFileState"] != "enabled" {
 		t.Errorf("unit file state %v, want enabled", props["UnitFileState"])
