@@ -20,8 +20,9 @@ service GuestAgent {
   rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse);
 
   // WatchMemory streams the guest's memory: one reading immediately after the
-  // call, then every 5 s and additionally whenever total or available
-  // changes noticeably.
+  // call, then one whenever any reported value (total, available or a
+  // commit figure) differs from the last reading sent, and at least every
+  // 5 s even without a change.
   rpc WatchMemory(WatchMemoryRequest) returns (stream WatchMemoryResponse);
 }
 
