@@ -173,8 +173,8 @@ func (c Config) Allows(cn string) bool { return slices.Contains(c.AllowedClients
 // file of a host agent gets `vms: []`, the empty policy that allows no
 // write, so the agent starts read-only until the operator activates a
 // policy. Keys and comments are rewritten in sorted order; the file is
-// replaced atomically with mode 0600 and, on Windows, the read-only ACL of
-// [fileacl.SecureConfig].
+// replaced atomically with [ConfigFileMode] and, on Windows, the read-only
+// ACL of [fileacl.SecureConfig].
 func MergeConfigFile(path string, c Config) error {
 	top := map[string]any{}
 	old, err := os.ReadFile(path) //nolint:gosec // G304: the path is the agent's own configuration file.
@@ -207,7 +207,35 @@ func MergeConfigFile(path string, c Config) error {
 	if err != nil {
 		return err
 	}
-	return writeFileSecured(path, out, 0o600, fileacl.SecureConfig)
+	return writeFileSecured(path, out, ConfigFileMode, fileacl.SecureConfig)
+}
+
+// Modes of the configuration file and its directory (DESIGN §4.5). On
+// Linux the service runs as a dynamic user (systemd DynamicUser=yes) that
+// owns no file in /etc, so root writes agent.yaml readable by everyone and
+// writable only by root: the service reads its configuration and cannot
+// change it. agent.yaml holds no secret (the agent's name, role, ports,
+// client CNs and firewall sources; Linux agents are guests, which have no
+// policy), the keys stay 0600 in the state directory. On Windows the ACL of
+// [fileacl.SecureConfig] decides, and the mode only clears the read-only
+// attribute.
+var (
+	ConfigFileMode = configModes(runtime.GOOS)
+	ConfigDirMode  = configDirMode(runtime.GOOS)
+)
+
+func configModes(goos string) fs.FileMode {
+	if goos == "linux" {
+		return 0o644
+	}
+	return 0o600
+}
+
+func configDirMode(goos string) fs.FileMode {
+	if goos == "linux" {
+		return 0o755
+	}
+	return 0o750
 }
 
 // Paths locates the agent's files.

@@ -27,15 +27,12 @@ func newServeCommand() *cobra.Command {
 }
 
 func newAgentCommand(e env) *cobra.Command {
-	install := stub("install", "Install the agent as a native system service and enroll it")
-	addEnrollFlags(install, "enroll")
-
 	return group("agent", "Run and manage a host or guest agent",
 		newAgentRunCommand(),
-		install,
-		stub("uninstall", "Remove the agent's system service"),
+		newAgentInstallCommand(e),
+		newAgentUninstallCommand(e),
 		newAgentEnrollCommand(e),
-		stub("status", "Print service state, health checks and certificate expiry"),
+		newAgentStatusCommand(e),
 		group("policy", "Manage the host agent's local write policy",
 			newAgentPolicySyncCommand(),
 		),

@@ -16,6 +16,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/matfax/hvmc/internal/agent"
+	"github.com/matfax/hvmc/internal/agent/svc"
 	"github.com/matfax/hvmc/internal/version"
 )
 
@@ -50,9 +52,37 @@ type env struct {
 	rootCAs *x509.CertPool
 	// stdin answers prompts (hvmc agent policy sync); nil means os.Stdin.
 	stdin io.Reader
+	// newPlatform is the service integration (hvmc agent install,
+	// uninstall, status); nil means svc.NewPlatform.
+	newPlatform func(agent.Clock) (svc.Platform, error)
+	// checkEnroll may refuse `hvmc agent enroll`; nil means
+	// svc.CheckEnroll.
+	checkEnroll func() error
 }
 
 func defaultEnv() env { return env{now: time.Now} }
+
+// clock is the agent framework's clock with e.now as its wall clock.
+func (e env) clock() agent.Clock {
+	if e.now == nil {
+		return agent.SystemClock()
+	}
+	return envClock{Clock: agent.SystemClock(), now: e.now}
+}
+
+func (e env) enrollAllowed() error {
+	if e.checkEnroll != nil {
+		return e.checkEnroll()
+	}
+	return svc.CheckEnroll()
+}
+
+func (e env) platform(clk agent.Clock) (svc.Platform, error) {
+	if e.newPlatform != nil {
+		return e.newPlatform(clk)
+	}
+	return svc.NewPlatform(clk)
+}
 
 // Execute runs hvmc with args (without the program name), writing to stdout
 // and stderr, and returns the process exit code.

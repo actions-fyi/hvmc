@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -127,8 +128,8 @@ func TestMergeConfigFileNewHostIsReadOnly(t *testing.T) {
 	}
 	if st, err := os.Stat(guest); err != nil {
 		t.Fatal(err)
-	} else if !isWindows() && st.Mode().Perm() != 0o600 {
-		t.Errorf("mode %v, want 0600", st.Mode().Perm())
+	} else if want := map[bool]os.FileMode{true: 0o644, false: 0o600}[runtime.GOOS == "linux"]; !isWindows() && st.Mode().Perm() != want {
+		t.Errorf("mode %v, want %v", st.Mode().Perm(), want)
 	}
 }
 
@@ -156,5 +157,14 @@ func TestDefaultPaths(t *testing.T) {
 	}
 	if DefaultPaths().Config == "" {
 		t.Error("DefaultPaths has no config path")
+	}
+}
+
+func TestConfigModes(t *testing.T) {
+	if configModes("linux") != 0o644 || configDirMode("linux") != 0o755 {
+		t.Error("linux: agent.yaml must be readable by the dynamic service user")
+	}
+	if configModes("windows") != 0o600 || configDirMode("windows") != 0o750 {
+		t.Error("windows: modes changed")
 	}
 }

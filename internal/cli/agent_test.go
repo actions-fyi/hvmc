@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/matfax/hvmc/internal/agent"
+	"github.com/matfax/hvmc/internal/agent/svc"
 	"github.com/matfax/hvmc/internal/pki"
 	"github.com/matfax/hvmc/internal/policy"
 )
@@ -65,7 +68,8 @@ func newEnrollEndpoint(t *testing.T, status int) (url, fingerprint string, e env
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{*kp.TLSCertificate()}, MinVersion: tls.VersionTLS12}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	return srv.URL + pki.EnrollPath, ca.Fingerprint(), env{now: func() time.Time { return testNow }, rootCAs: ca.Pool()}
+	allow := func() error { return nil } // hermetic: an installed service on this machine does not matter
+	return srv.URL + pki.EnrollPath, ca.Fingerprint(), env{now: func() time.Time { return testNow }, rootCAs: ca.Pool(), checkEnroll: allow}
 }
 
 func TestAgentEnroll(t *testing.T) {
@@ -100,6 +104,23 @@ func TestAgentEnrollRefused(t *testing.T) {
 		"--agent", "host", "--role", "host", "--config", filepath.Join(dir, "agent.yaml"), "--state-dir", dir)
 	if code != ExitFailure || !strings.Contains(errOut, "401 Unauthorized: token refused") {
 		t.Errorf("exit %d, stderr %q", code, errOut)
+	}
+}
+
+// TestAgentEnrollServiceInstalled: where the installed service needs
+// install to write its state (systemd), enroll refuses before it contacts
+// the coordinator.
+func TestAgentEnrollServiceInstalled(t *testing.T) {
+	url, fp, e := newEnrollEndpoint(t, http.StatusOK)
+	e.checkEnroll = func() error { return fmt.Errorf("%w: use hvmc agent install", svc.ErrServiceInstalled) }
+	dir := t.TempDir()
+	code, _, errOut := runCLIEnv(t, e, "agent", "enroll", "--enroll", url, "--token", cliToken, "--ca-sha256", fp,
+		"--agent", "vm-1", "--role", "guest", "--config", filepath.Join(dir, "agent.yaml"), "--state-dir", dir)
+	if code != ExitFailure || !strings.Contains(errOut, "the agent service is installed") {
+		t.Errorf("exit %d, stderr %q", code, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "serving.pem")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("enrolled despite the refusal: %v", err)
 	}
 }
 

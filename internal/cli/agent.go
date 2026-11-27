@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/matfax/hvmc/internal/agent"
 	"github.com/matfax/hvmc/internal/agent/guest"
 	"github.com/matfax/hvmc/internal/agent/host"
+	"github.com/matfax/hvmc/internal/agent/svc"
 	"github.com/matfax/hvmc/internal/policy"
 	"github.com/matfax/hvmc/internal/version"
 )
@@ -40,6 +42,10 @@ func agentPaths(cmd *cobra.Command) agent.Paths {
 	p := agent.DefaultPaths()
 	p.Config, _ = cmd.Flags().GetString("config")
 	p.State, _ = cmd.Flags().GetString("state-dir")
+	if p.Logs != "" {
+		// The logs live in the state directory (DESIGN §4.5) and move with it.
+		p.Logs = filepath.Join(p.State, "logs")
+	}
 	return p
 }
 
@@ -73,6 +79,9 @@ func runAgentEnroll(cmd *cobra.Command, e env) error {
 	o.Role = agent.Role(role)
 	if o.Role != agent.RoleHost && o.Role != agent.RoleGuest {
 		return usageErrorf("--role must be %s or %s, got %q", agent.RoleHost, agent.RoleGuest, role)
+	}
+	if err := e.enrollAllowed(); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), time.Minute)
 	defer cancel()
@@ -117,24 +126,43 @@ func newAgentRunCommand() *cobra.Command {
 	return cmd
 }
 
+// runAgent runs the agent in the foreground until SIGINT or SIGTERM, or,
+// when the service manager (the Windows Service Control Manager, systemd)
+// started it, as the service.
 func runAgent(cmd *cobra.Command, _ []string) error {
 	paths := agentPaths(cmd)
-	cfg, err := agent.LoadConfig(paths.Config)
+	isService, err := svc.IsService()
 	if err != nil {
 		return err
 	}
-	newService, ok := agentServices[cfg.Role]
-	if !ok {
-		return fmt.Errorf("%s: role %s: %w", cmd.CommandPath(), cfg.Role, ErrNotImplemented)
+	stderr := cmd.ErrOrStderr()
+	if isService && !svc.LogsToStderr {
+		stderr = nil // no console: the Event Log and the log file
 	}
-	log, closeLog, err := agent.NewLogger(agent.LogOptions{Stderr: cmd.ErrOrStderr(), Dir: paths.Logs})
+	log, closeLog, err := agent.NewLogger(agent.LogOptions{Stderr: stderr, Dir: paths.Logs})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = closeLog() }()
-	a, err := agent.New(agent.Options{
-		Config: cfg, Paths: paths, Service: newService(), Logger: log, Version: version.String(),
-	})
+	clk := agent.SystemClock()
+	build := func(hooks svc.Hooks) (svc.Agent, error) {
+		cfg, err := agent.LoadConfig(paths.Config)
+		if err != nil {
+			return nil, err
+		}
+		newService, ok := agentServices[cfg.Role]
+		if !ok {
+			return nil, fmt.Errorf("%s: role %s: %w", cmd.CommandPath(), cfg.Role, ErrNotImplemented)
+		}
+		return agent.New(agent.Options{
+			Config: cfg, Paths: paths, Service: newService(), Clock: clk, Logger: log, Version: version.String(),
+			OnTick: hooks.OnTick, OnReadyChange: hooks.OnReadyChange,
+		})
+	}
+	if isService {
+		return svc.RunService(log, clk, build)
+	}
+	a, err := build(svc.Hooks{})
 	if err != nil {
 		return err
 	}
