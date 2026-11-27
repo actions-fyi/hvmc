@@ -40,6 +40,16 @@ jobs:
         run: make test
       - name: Ledger coverage (>= 95 %)
         run: make test-ledger-coverage
+      - name: Service round trip (installs, upgrades and removes the agent's systemd service)
+        # Needs root and systemd as PID 1; built only with the servicetest tag,
+        # so a plain `go test ./...` never installs a service. The installed
+        # binary is a test build (servicetesthooks) whose hooks hang the main
+        # loop or hold back READY=1 when the test's drop-in asks for it.
+        run: |
+          go build -tags servicetesthooks -o "$RUNNER_TEMP/hvmc" ./cmd/hvmc
+          go test -c -tags servicetest -o "$RUNNER_TEMP/svc.test" ./internal/agent/svc/
+          sudo env HVMC_SERVICETEST_BINARY="$RUNNER_TEMP/hvmc" "$RUNNER_TEMP/svc.test" \
+            -test.run '^TestServiceRoundTrip$' -test.count=1 -test.v -test.timeout 15m
       - name: Build
         run: make build build-agent-linux build-agent-windows
       - name: Build image (no push)

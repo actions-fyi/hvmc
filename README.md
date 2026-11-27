@@ -33,3 +33,13 @@ elevated prompt; it fails, rather than skips, when it is not elevated or hvmc is
 ```powershell
 go test -tags servicetest -run '^TestServiceRoundTrip$' -count=1 -v ./internal/agent/svc/
 ```
+
+The systemd round trip is the same test on Linux, in its own step of the Linux CI job. It needs root,
+systemd as PID 1 and a disposable machine without hvmc; it installs a test build of hvmc (tag
+`servicetesthooks`) whose hooks let it hang the agent for the watchdog test:
+
+```sh
+go build -tags servicetesthooks -o /tmp/hvmc ./cmd/hvmc
+go test -c -tags servicetest -o /tmp/svc.test ./internal/agent/svc/
+sudo env HVMC_SERVICETEST_BINARY=/tmp/hvmc /tmp/svc.test -test.run '^TestServiceRoundTrip$' -test.v
+```
