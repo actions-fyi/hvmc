@@ -6,11 +6,28 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/test/bufconn"
 
 	agentv1 "github.com/matfax/hvmc/internal/agentapi/hvmc/agent/v1"
 )
+
+// healthServer is an agent's grpc.health.v1.Health: the shared health
+// server, with Check hanging like any other method when the agent's
+// behaviour lists "Check" (or "*") in Hang.
+type healthServer struct {
+	*health.Server
+	sim  *Sim
+	name string
+}
+
+func (h healthServer) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	if err := h.sim.hangCheck(ctx, h.name); err != nil {
+		return nil, err
+	}
+	return h.Server.Check(ctx, req)
+}
 
 // bufconnSize is the buffer of in-memory listeners.
 const bufconnSize = 1 << 20
@@ -33,7 +50,7 @@ func (s *Sim) RegisterHost(srv grpc.ServiceRegistrar) {
 	s.mu.Unlock()
 	agentv1.RegisterHostAgentServer(srv, &hostServer{sim: s, name: name})
 	agentv1.RegisterCertificateServiceServer(srv, &certServer{sim: s, name: name})
-	healthpb.RegisterHealthServer(srv, s.healthFor(name))
+	healthpb.RegisterHealthServer(srv, healthServer{Server: s.healthFor(name), sim: s, name: name})
 }
 
 // RegisterGuest registers the services of the named guest agent on srv:
@@ -47,7 +64,7 @@ func (s *Sim) RegisterGuest(srv grpc.ServiceRegistrar, name string) error {
 	}
 	agentv1.RegisterGuestAgentServer(srv, &guestServer{sim: s, name: name})
 	agentv1.RegisterCertificateServiceServer(srv, &certServer{sim: s, name: name})
-	healthpb.RegisterHealthServer(srv, s.healthFor(name))
+	healthpb.RegisterHealthServer(srv, healthServer{Server: s.healthFor(name), sim: s, name: name})
 	return nil
 }
 

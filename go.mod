@@ -7,6 +7,7 @@ toolchain go1.27.4
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/prometheus/client_golang v1.25.0
+	github.com/prometheus/client_model v0.6.3
 	github.com/samber/slog-multi v1.9.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.50.0
@@ -50,7 +51,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/samber/lo v1.53.0 // indirect

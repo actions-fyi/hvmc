@@ -148,6 +148,11 @@ func (c *certServer) InstallCertificate(ctx context.Context, req *agentv1.Instal
 		b.Certificate.FailInstall--
 		return nil, status.Error(codes.Internal, "storing the certificate failed; the current pair stays active")
 	}
+	if b.Certificate != nil && b.Certificate.RollBack > 0 {
+		b.Certificate.RollBack--
+		st.pending = nil
+		return &agentv1.InstallCertificateResponse{NotAfter: timestamppb.New(leaf.NotAfter)}, nil
+	}
 	st.current = &tls.Certificate{Certificate: slices.Clone(chainDER), PrivateKey: st.pending, Leaf: leaf}
 	st.pending = nil
 	st.installs++

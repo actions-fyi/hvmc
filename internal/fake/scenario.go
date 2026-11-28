@@ -66,9 +66,10 @@ type Scenario struct {
 type AgentBehaviour struct {
 	// NotServing makes the agent's health service report NOT_SERVING.
 	NotServing bool `json:"notServing,omitempty"`
-	// Hang lists RPC method names (e.g. "SetStartup", or "*" for all) that
-	// block until the caller's deadline instead of answering. On the host,
-	// Hyper-V calls also end at the agent's cmdlet timeout.
+	// Hang lists RPC method names (e.g. "SetStartup", "Check" for the
+	// health check, or "*" for all) that block until the caller's deadline
+	// instead of answering. On the host, Hyper-V calls also end at the
+	// agent's cmdlet timeout.
 	Hang []string `json:"hang,omitempty"`
 	// Stale freezes the agent's observations: reads keep returning the
 	// values captured when Stale was set, with an observed_at that no longer
@@ -100,6 +101,11 @@ type CertSpec struct {
 	// fail with INTERNAL (storing the pair failed; the current pair and the
 	// pending key are kept). Counts down as calls fail.
 	FailInstall int `json:"failInstall,omitempty"`
+	// RollBack makes the next n successful InstallCertificate calls roll
+	// back: the call succeeds, but the agent keeps serving its previous
+	// pair, as when a client refuses the new certificate (DESIGN §4.6).
+	// Counts down as installs roll back.
+	RollBack int `json:"rollBack,omitempty"`
 }
 
 // HostSpec is the Hyper-V host and the host agent's behaviours.
@@ -366,10 +372,11 @@ func (sc *Scenario) guest(name string) *GuestSpec {
 	return nil
 }
 
-// Host agent and guest agent RPC names usable in AgentBehaviour.Hang.
+// Host agent and guest agent RPC names usable in AgentBehaviour.Hang;
+// "Check" is the health check.
 var (
-	hostMethods  = []string{"GetHost", "ListVMs", "WatchVMs", "SetStartup", "SetDynamicLimits", "ProposePolicy", "RotateCertificate", "InstallCertificate"}
-	guestMethods = []string{"GetMemory", "WatchMemory", "RotateCertificate", "InstallCertificate"}
+	hostMethods  = []string{"GetHost", "ListVMs", "WatchVMs", "SetStartup", "SetDynamicLimits", "ProposePolicy", "RotateCertificate", "InstallCertificate", "Check"}
+	guestMethods = []string{"GetMemory", "WatchMemory", "RotateCertificate", "InstallCertificate", "Check"}
 )
 
 // problems collects validation errors.
@@ -459,7 +466,7 @@ func (a AgentBehaviour) validate(where string, methods []string) []error {
 		for _, ip := range c.IPAddresses {
 			p.check(net.ParseIP(ip) == nil, "%s: certificate: invalid IP address %q", where, ip)
 		}
-		p.check(c.FailRotate < 0 || c.FailInstall < 0, "%s: certificate: failure counts must not be negative", where)
+		p.check(c.FailRotate < 0 || c.FailInstall < 0 || c.RollBack < 0, "%s: certificate: failure counts must not be negative", where)
 	}
 	return p.errs
 }
