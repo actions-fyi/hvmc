@@ -40,8 +40,9 @@ type GuestAgentClient interface {
 	// Errors: UNAVAILABLE (the memory source could not be read).
 	GetMemory(ctx context.Context, in *GetMemoryRequest, opts ...grpc.CallOption) (*GetMemoryResponse, error)
 	// WatchMemory streams the guest's memory: one reading immediately after the
-	// call, then every 5 s and additionally whenever total or available
-	// changes noticeably.
+	// call, then one whenever any reported value (total, available or a
+	// commit figure) differs from the last reading sent, and at least every
+	// 5 s even without a change.
 	WatchMemory(ctx context.Context, in *WatchMemoryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchMemoryResponse], error)
 }
 
@@ -95,8 +96,9 @@ type GuestAgentServer interface {
 	// Errors: UNAVAILABLE (the memory source could not be read).
 	GetMemory(context.Context, *GetMemoryRequest) (*GetMemoryResponse, error)
 	// WatchMemory streams the guest's memory: one reading immediately after the
-	// call, then every 5 s and additionally whenever total or available
-	// changes noticeably.
+	// call, then one whenever any reported value (total, available or a
+	// commit figure) differs from the last reading sent, and at least every
+	// 5 s even without a change.
 	WatchMemory(*WatchMemoryRequest, grpc.ServerStreamingServer[WatchMemoryResponse]) error
 	mustEmbedUnimplementedGuestAgentServer()
 }

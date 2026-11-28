@@ -20,4 +20,4 @@ jobs:
     permissions:
       contents: read # Check out the label config
       issues: write # Create and update labels
-    uses: actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v4.3.0
+    uses: actions-fyi/shared-workflows/.github/workflows/_label-sync.yml@v4.4.0
